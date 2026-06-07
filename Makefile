@@ -1,3 +1,6 @@
+CONTRACTS = credit_factory credit_token verification_oracle retirement_registry project_registry governance
+WASM_DIR = target/wasm32-unknown-unknown/release
+
 .PHONY: build fix-wasm test lint fmt
 
 build:
@@ -5,16 +8,13 @@ build:
 	$(MAKE) fix-wasm
 
 fix-wasm:
-	wasm-tools print target/wasm32-unknown-unknown/release/credit_factory.wasm \
-		| wasm-tools parse -o target/wasm32-unknown-unknown/release/credit_factory.wasm -
-	wasm-tools print target/wasm32-unknown-unknown/release/credit_token.wasm \
-		| wasm-tools parse -o target/wasm32-unknown-unknown/release/credit_token.wasm -
-	wasm-tools strip -d 'target_features' \
-		-o target/wasm32-unknown-unknown/release/credit_factory.wasm \
-		target/wasm32-unknown-unknown/release/credit_factory.wasm
-	wasm-tools strip -d 'target_features' \
-		-o target/wasm32-unknown-unknown/release/credit_token.wasm \
-		target/wasm32-unknown-unknown/release/credit_token.wasm
+	for contract in $(CONTRACTS); do \
+		wasm-tools print $(WASM_DIR)/$$contract.wasm \
+			| wasm-tools parse -o $(WASM_DIR)/$$contract.wasm -; \
+		wasm-tools strip -d 'target_features' \
+			-o $(WASM_DIR)/$$contract.wasm \
+			$(WASM_DIR)/$$contract.wasm; \
+	done
 
 test: build
 	cargo test --workspace -- --nocapture
