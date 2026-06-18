@@ -1135,7 +1135,9 @@ npx ts-node scripts/simulate_readings.ts \
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full details.
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) to get started.
+
+Before contributing, review the [Code of Conduct](CODE_OF_CONDUCT.md). For security issues, see [SECURITY.md](SECURITY.md).
 
 ### Quick Start
 
@@ -1156,14 +1158,6 @@ git commit -m "feat: add multi-oracle median aggregation"
 # Push and create PR
 git push origin feat/your-feature
 ```
-
-### Code Style
-
-- Run `cargo fmt` before every commit
-- `cargo clippy` must pass with zero warnings
-- `cargo test` must pass with 95%+ coverage
-- All public functions must have doc comments (`///`)
-- All unsafe code is prohibited
 
 ---
 
