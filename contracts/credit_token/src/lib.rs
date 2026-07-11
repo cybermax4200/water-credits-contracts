@@ -227,6 +227,42 @@ impl CreditToken {
         e.events().publish((EVENT_MINTED,), (to, amount));
     }
 
+    /// Mint credits to multiple recipients in a single call.
+    /// Each entry in `recipients` receives the corresponding amount from `amounts`.
+    /// The two slices must be the same length. Callable by admin or designated minter.
+    pub fn batch_mint_to(e: Env, minter: Address, recipients: Vec<Address>, amounts: Vec<i128>) {
+        if recipients.len() != amounts.len() {
+            panic!("recipients and amounts length mismatch");
+        }
+        if recipients.len() == 0 {
+            panic!("empty batch");
+        }
+        require_not_paused(&e);
+        require_minter(&e, &minter);
+
+        let mut total: i128 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap();
+
+        for i in 0..recipients.len() {
+            let to = recipients.get(i).unwrap();
+            let amount = amounts.get(i).unwrap();
+            if amount <= 0 {
+                panic!("amount must be positive");
+            }
+            let balance = read_balance(&e, &to);
+            save_balance(&e, &to, balance.checked_add(amount).expect("overflow"));
+            total = total.checked_add(amount).expect("overflow");
+            e.events().publish((EVENT_MINTED,), (to, amount));
+        }
+
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalSupply, &total);
+    }
+
     /// Burn credits from a holder. Admin only.
     pub fn burn(e: Env, admin: Address, from: Address, amount: i128) {
         if amount <= 0 {
@@ -674,6 +710,36 @@ mod tests {
         assert_eq!(client.balance(&buyer), 500);
         assert_eq!(client.total_retired(), 500);
         assert_eq!(client.total_supply(), 4500);
+    }
+
+    #[test]
+    fn test_batch_mint_to_distributes_correctly() {
+        let (e, admin, user1, user2, _project_id, client) = setup();
+        let user3 = Address::generate(&e);
+        e.mock_all_auths();
+
+        let recipients = Vec::from_array(&e, [user1.clone(), user2.clone(), user3.clone()]);
+        let amounts: Vec<i128> = Vec::from_array(&e, [100i128, 200i128, 300i128]);
+
+        client.batch_mint_to(&admin, &recipients, &amounts);
+
+        assert_eq!(client.balance(&user1), 100);
+        assert_eq!(client.balance(&user2), 200);
+        assert_eq!(client.balance(&user3), 300);
+        assert_eq!(client.total_supply(), 600);
+    }
+
+    #[test]
+    fn test_batch_mint_to_same_recipient_accumulates() {
+        let (e, admin, user, _, _project_id, client) = setup();
+        e.mock_all_auths();
+
+        let recipients = Vec::from_array(&e, [user.clone(), user.clone()]);
+        let amounts: Vec<i128> = Vec::from_array(&e, [150i128, 250i128]);
+
+        client.batch_mint_to(&admin, &recipients, &amounts);
+        assert_eq!(client.balance(&user), 400);
+        assert_eq!(client.total_supply(), 400);
     }
 
     #[test]
