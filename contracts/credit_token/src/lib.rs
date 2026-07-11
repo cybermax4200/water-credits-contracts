@@ -105,6 +105,32 @@ fn save_balance(e: &Env, addr: &Address, amount: i128) {
         .set(&DataKey::Balance(addr.clone()), &amount);
 }
 
+fn read_total_supply(e: &Env) -> i128 {
+    e.storage()
+        .instance()
+        .get(&DataKey::TotalSupply)
+        .unwrap()
+}
+
+fn save_total_supply(e: &Env, amount: i128) {
+    e.storage()
+        .instance()
+        .set(&DataKey::TotalSupply, &amount);
+}
+
+fn read_total_retired(e: &Env) -> i128 {
+    e.storage()
+        .instance()
+        .get(&DataKey::TotalRetired)
+        .unwrap()
+}
+
+fn save_total_retired(e: &Env, amount: i128) {
+    e.storage()
+        .instance()
+        .set(&DataKey::TotalRetired, &amount);
+}
+
 fn read_allowance(e: &Env, from: &Address, spender: &Address) -> i128 {
     e.storage()
         .instance()
@@ -236,11 +262,7 @@ impl CreditToken {
         require_not_paused(&e);
         require_minter(&e, &minter);
 
-        let total: i128 = e
-            .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap();
+        let total = read_total_supply(&e);
         let max: i128 = e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0);
         if max > 0 && total.checked_add(amount).expect("overflow") > max {
             panic!("max supply exceeded");
@@ -248,9 +270,7 @@ impl CreditToken {
 
         let balance = read_balance(&e, &to);
         save_balance(&e, &to, balance.checked_add(amount).expect("overflow"));
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &total.checked_add(amount).expect("overflow"));
+        save_total_supply(&e, total.checked_add(amount).expect("overflow"));
 
         e.events().publish((EVENT_MINTED,), (to, amount));
     }
@@ -268,11 +288,7 @@ impl CreditToken {
         require_not_paused(&e);
         require_minter(&e, &minter);
 
-        let mut total: i128 = e
-            .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap();
+        let mut total = read_total_supply(&e);
         let max: i128 = e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0);
 
         for i in 0..recipients.len() {
@@ -290,9 +306,7 @@ impl CreditToken {
             e.events().publish((EVENT_MINTED,), (to, amount));
         }
 
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &total);
+        save_total_supply(&e, total);
     }
 
     /// Burn credits from a holder. Admin only.
@@ -307,18 +321,12 @@ impl CreditToken {
         }
 
         let balance = read_balance(&e, &from);
-        let total: i128 = e
-            .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap();
+        let total = read_total_supply(&e);
         if balance < amount {
             panic!("insufficient balance");
         }
         save_balance(&e, &from, balance - amount);
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(total - amount));
+        save_total_supply(&e, total - amount);
     }
 
     /// Transfer credits between wallets.
@@ -391,23 +399,11 @@ impl CreditToken {
         }
         save_balance(&e, &holder, balance - amount);
 
-        let total: i128 = e
-            .storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap();
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(total - amount));
+        let total = read_total_supply(&e);
+        save_total_supply(&e, total - amount);
 
-        let total_retired: i128 = e
-            .storage()
-            .instance()
-            .get(&DataKey::TotalRetired)
-            .unwrap();
-        e.storage()
-            .instance()
-            .set(&DataKey::TotalRetired, &(total_retired + amount));
+        let total_retired = read_total_retired(&e);
+        save_total_retired(&e, total_retired + amount);
 
         let metadata: CreditMetadata = e.storage().instance().get(&DataKey::Metadata).unwrap();
         let project_id = metadata.project_id.clone();
@@ -463,17 +459,11 @@ impl CreditToken {
     }
 
     pub fn total_supply(e: Env) -> i128 {
-        e.storage()
-            .instance()
-            .get(&DataKey::TotalSupply)
-            .unwrap()
+        read_total_supply(&e)
     }
 
     pub fn total_retired(e: Env) -> i128 {
-        e.storage()
-            .instance()
-            .get(&DataKey::TotalRetired)
-            .unwrap()
+        read_total_retired(&e)
     }
 
     pub fn allowance(e: Env, from: Address, spender: Address) -> i128 {
