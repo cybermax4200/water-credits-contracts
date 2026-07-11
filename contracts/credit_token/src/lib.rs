@@ -52,6 +52,7 @@ pub enum DataKey {
     Cert(u64),
     CertCount,
     Paused,
+    MaxSupply,
 }
 
 fn is_paused(e: &Env) -> bool {
@@ -205,6 +206,28 @@ impl CreditToken {
         is_paused(&e)
     }
 
+    /// Set the maximum total supply for this token. Set to 0 to remove the cap.
+    /// Admin only. Should be set once at project initialization to match the
+    /// verified project area and methodology ceiling.
+    pub fn set_max_supply(e: Env, admin: Address, max: i128) {
+        admin.require_auth();
+        if admin != read_admin(&e) {
+            panic!("unauthorized");
+        }
+        if max < 0 {
+            panic!("max supply must be non-negative");
+        }
+        e.storage().instance().set(&DataKey::MaxSupply, &max);
+    }
+
+    /// Get the configured maximum supply (0 = uncapped).
+    pub fn max_supply(e: Env) -> i128 {
+        e.storage()
+            .instance()
+            .get(&DataKey::MaxSupply)
+            .unwrap_or(0)
+    }
+
     /// Mint new credits to a beneficiary. Callable by admin or designated minter.
     pub fn mint_to(e: Env, minter: Address, to: Address, amount: i128) {
         if amount <= 0 {
@@ -213,12 +236,17 @@ impl CreditToken {
         require_not_paused(&e);
         require_minter(&e, &minter);
 
-        let balance = read_balance(&e, &to);
         let total: i128 = e
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap();
+        let max: i128 = e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0);
+        if max > 0 && total.checked_add(amount).expect("overflow") > max {
+            panic!("max supply exceeded");
+        }
+
+        let balance = read_balance(&e, &to);
         save_balance(&e, &to, balance.checked_add(amount).expect("overflow"));
         e.storage()
             .instance()
@@ -245,12 +273,16 @@ impl CreditToken {
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap();
+        let max: i128 = e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0);
 
         for i in 0..recipients.len() {
             let to = recipients.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
             if amount <= 0 {
                 panic!("amount must be positive");
+            }
+            if max > 0 && total.checked_add(amount).expect("overflow") > max {
+                panic!("max supply exceeded");
             }
             let balance = read_balance(&e, &to);
             save_balance(&e, &to, balance.checked_add(amount).expect("overflow"));
@@ -710,6 +742,46 @@ mod tests {
         assert_eq!(client.balance(&buyer), 500);
         assert_eq!(client.total_retired(), 500);
         assert_eq!(client.total_supply(), 4500);
+    }
+
+    #[test]
+    fn test_max_supply_blocks_over_cap() {
+        let (e, admin, user, _, _project_id, client) = setup();
+        e.mock_all_auths();
+
+        client.set_max_supply(&admin, &1000);
+        assert_eq!(client.max_supply(), 1000);
+
+        client.mint_to(&admin, &user, &1000);
+        assert_eq!(client.total_supply(), 1000);
+
+        // Minting beyond cap should panic
+        let result = std::panic::catch_unwind(|| {
+            client.mint_to(&admin, &user, &1);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_max_supply_zero_means_uncapped() {
+        let (e, admin, user, _, _project_id, client) = setup();
+        e.mock_all_auths();
+
+        // Default: 0 = uncapped
+        assert_eq!(client.max_supply(), 0);
+        client.mint_to(&admin, &user, &1_000_000);
+        assert_eq!(client.total_supply(), 1_000_000);
+    }
+
+    #[test]
+    fn test_max_supply_allows_exact_cap() {
+        let (e, admin, user, _, _project_id, client) = setup();
+        e.mock_all_auths();
+
+        client.set_max_supply(&admin, &500);
+        client.mint_to(&admin, &user, &300);
+        client.mint_to(&admin, &user, &200); // exactly at cap
+        assert_eq!(client.total_supply(), 500);
     }
 
     #[test]
