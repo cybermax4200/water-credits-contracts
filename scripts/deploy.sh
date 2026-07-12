@@ -1,11 +1,173 @@
 #!/usr/bin/env bash
+# deploy.sh — Build and deploy all six water-credits contracts.
+#
+# Usage:
+#   ./scripts/deploy.sh [--network local|testnet|mainnet] [--source <key-name>]
+#
+# Outputs:
+#   Prints deployed contract addresses to stdout.
+#   Writes contract addresses to .env.deployed in the project root.
+#
+# Requirements:
+#   - soroban-cli 20.0.0+  (cargo install soroban-cli --version 20.0.0)
+#   - rustup target wasm32-unknown-unknown
+#   - A funded Stellar account key registered with `soroban keys generate`
+
 set -euo pipefail
 
-echo "Building contracts..."
-cargo build --target wasm32-unknown-unknown --release
+# ── Defaults ─────────────────────────────────────────────────────────────────
+NETWORK="local"
+SOURCE_KEY="admin-key"
+ENV_FILE=".env.deployed"
 
-echo "Deploying contracts to local devnet..."
-# TODO: Add soroban CLI deploy commands
-# soroban contract deploy --wasm target/wasm32-unknown-unknown/release/credit_token.wasm --network local
+# ── Argument parsing ──────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --network)
+      NETWORK="$2"
+      shift 2
+      ;;
+    --source)
+      SOURCE_KEY="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: $0 [--network local|testnet|mainnet] [--source <key-name>]" >&2
+      exit 1
+      ;;
+  esac
+done
 
-echo "Done."
+# ── Validate network ──────────────────────────────────────────────────────────
+case "$NETWORK" in
+  local|testnet|mainnet) ;;
+  *)
+    echo "Error: --network must be one of: local, testnet, mainnet" >&2
+    exit 1
+    ;;
+esac
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+log()  { echo "[deploy] $*"; }
+fail() { echo "[deploy] ERROR: $*" >&2; exit 1; }
+
+# deploy_contract <wasm-path> → prints contract ID
+deploy_contract() {
+  local wasm_path="$1"
+  local contract_id
+
+  contract_id=$(soroban contract deploy \
+    --wasm "$wasm_path" \
+    --network "$NETWORK" \
+    --source "$SOURCE_KEY" 2>&1) || fail "Failed to deploy $wasm_path: $contract_id"
+
+  echo "$contract_id"
+}
+
+# ── Pre-flight checks ─────────────────────────────────────────────────────────
+command -v soroban >/dev/null 2>&1 || fail "soroban CLI not found. Install with: cargo install soroban-cli --version 20.0.0"
+command -v cargo   >/dev/null 2>&1 || fail "cargo not found. Install Rust from https://rustup.rs"
+
+log "Network  : $NETWORK"
+log "Source   : $SOURCE_KEY"
+log "Env file : $ENV_FILE"
+echo ""
+
+# ── Step 1: Build ─────────────────────────────────────────────────────────────
+log "Building all contracts (wasm32-unknown-unknown, release)..."
+cargo build --target wasm32-unknown-unknown --release \
+  || fail "Cargo build failed."
+
+WASM_DIR="target/wasm32-unknown-unknown/release"
+
+# Verify every expected WASM exists before we start deploying
+EXPECTED_WASMS=(
+  "$WASM_DIR/governance.wasm"
+  "$WASM_DIR/project_registry.wasm"
+  "$WASM_DIR/retirement_registry.wasm"
+  "$WASM_DIR/credit_token.wasm"
+  "$WASM_DIR/credit_factory.wasm"
+  "$WASM_DIR/verification_oracle.wasm"
+)
+for wasm in "${EXPECTED_WASMS[@]}"; do
+  [[ -f "$wasm" ]] || fail "Expected WASM not found after build: $wasm"
+done
+log "All WASM artifacts present."
+echo ""
+
+# ── Step 2: Deploy (order matters — dependents last) ─────────────────────────
+# Order:
+#   1. governance           (no runtime dependencies)
+#   2. project_registry     (no runtime dependencies)
+#   3. retirement_registry  (no runtime dependencies)
+#   4. credit_token         (reference WASM; also installed for its hash)
+#   5. credit_factory       (needs credit_token WASM hash)
+#   6. verification_oracle  (needs credit_factory address)
+
+log "Deploying governance..."
+GOVERNANCE_ID=$(deploy_contract "$WASM_DIR/governance.wasm")
+log "  governance            → $GOVERNANCE_ID"
+
+log "Deploying project_registry..."
+PROJECT_REGISTRY_ID=$(deploy_contract "$WASM_DIR/project_registry.wasm")
+log "  project_registry      → $PROJECT_REGISTRY_ID"
+
+log "Deploying retirement_registry..."
+RETIREMENT_REGISTRY_ID=$(deploy_contract "$WASM_DIR/retirement_registry.wasm")
+log "  retirement_registry   → $RETIREMENT_REGISTRY_ID"
+
+log "Deploying credit_token (reference instance)..."
+CREDIT_TOKEN_ID=$(deploy_contract "$WASM_DIR/credit_token.wasm")
+log "  credit_token          → $CREDIT_TOKEN_ID"
+
+log "Installing credit_token WASM to obtain its hash (used by factory)..."
+CREDIT_TOKEN_WASM_HASH=$(soroban contract install \
+  --wasm "$WASM_DIR/credit_token.wasm" \
+  --network "$NETWORK" \
+  --source "$SOURCE_KEY" 2>&1) \
+  || fail "Failed to install credit_token WASM: $CREDIT_TOKEN_WASM_HASH"
+log "  credit_token WASM hash → $CREDIT_TOKEN_WASM_HASH"
+
+log "Deploying credit_factory..."
+CREDIT_FACTORY_ID=$(deploy_contract "$WASM_DIR/credit_factory.wasm")
+log "  credit_factory        → $CREDIT_FACTORY_ID"
+
+log "Deploying verification_oracle..."
+VERIFICATION_ORACLE_ID=$(deploy_contract "$WASM_DIR/verification_oracle.wasm")
+log "  verification_oracle   → $VERIFICATION_ORACLE_ID"
+
+echo ""
+
+# ── Step 3: Write .env.deployed ───────────────────────────────────────────────
+log "Writing contract addresses to $ENV_FILE..."
+cat > "$ENV_FILE" <<EOF
+# Auto-generated by scripts/deploy.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Network: $NETWORK
+
+NETWORK=$NETWORK
+SOURCE_KEY=$SOURCE_KEY
+
+GOVERNANCE_ID=$GOVERNANCE_ID
+PROJECT_REGISTRY_ID=$PROJECT_REGISTRY_ID
+RETIREMENT_REGISTRY_ID=$RETIREMENT_REGISTRY_ID
+CREDIT_TOKEN_ID=$CREDIT_TOKEN_ID
+CREDIT_TOKEN_WASM_HASH=$CREDIT_TOKEN_WASM_HASH
+CREDIT_FACTORY_ID=$CREDIT_FACTORY_ID
+VERIFICATION_ORACLE_ID=$VERIFICATION_ORACLE_ID
+EOF
+
+echo ""
+log "────────────────────────────────────────────"
+log "Deployment complete."
+log ""
+log "  governance            $GOVERNANCE_ID"
+log "  project_registry      $PROJECT_REGISTRY_ID"
+log "  retirement_registry   $RETIREMENT_REGISTRY_ID"
+log "  credit_token          $CREDIT_TOKEN_ID"
+log "  credit_token wasm     $CREDIT_TOKEN_WASM_HASH"
+log "  credit_factory        $CREDIT_FACTORY_ID"
+log "  verification_oracle   $VERIFICATION_ORACLE_ID"
+log ""
+log "Addresses saved to $ENV_FILE"
+log "────────────────────────────────────────────"
