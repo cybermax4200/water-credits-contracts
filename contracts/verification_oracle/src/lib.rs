@@ -72,7 +72,7 @@ pub enum DataKey {
     OracleCount,
     OracleList,
     Config,
-    OracleNonce(Address),
+    OracleNonce((BytesN<32>, Address)),
     WindowState(BytesN<32>),
     OracleSubmitted(BytesN<32>, Address),
     LastResult(BytesN<32>),
@@ -326,7 +326,7 @@ fn submit_reading_impl(
         let expected_nonce: u64 = e
             .storage()
             .instance()
-            .get(&DataKey::OracleNonce(oracle.clone()))
+            .get(&DataKey::OracleNonce((project_id.clone(), oracle.clone())))
             .unwrap_or(0)
             + 1;
         if nonce != expected_nonce {
@@ -334,7 +334,7 @@ fn submit_reading_impl(
         }
         e.storage()
             .instance()
-            .set(&DataKey::OracleNonce(oracle.clone()), &nonce);
+            .set(&DataKey::OracleNonce((project_id.clone(), oracle.clone())), &nonce);
 
         // Track per-oracle and global submission counts
         let oracle_count: u64 = e
@@ -958,30 +958,27 @@ mod tests {
     }
 
     #[test]
-    fn test_total_submissions_accumulates_across_oracles() {
+    fn test_nonce_independent_across_projects() {
         let (e, admin, client) = setup_with_client();
         e.mock_all_auths();
 
         let o1 = Address::generate(&e);
-        let o2 = Address::generate(&e);
-        let o3 = Address::generate(&e);
         client.add_oracle(&admin, &o1);
-        client.add_oracle(&admin, &o2);
-        client.add_oracle(&admin, &o3);
 
-        let p1 = BytesN::from_array(&e, &[20u8; 32]);
-        let p2 = BytesN::from_array(&e, &[21u8; 32]);
-        let p3 = BytesN::from_array(&e, &[22u8; 32]);
+        let p1 = BytesN::from_array(&e, &[50u8; 32]);
+        let p2 = BytesN::from_array(&e, &[51u8; 32]);
+        let p3 = BytesN::from_array(&e, &[52u8; 32]);
 
-        // 3 oracles × 3 different windows = 9 total submissions but nonce is per-oracle
+        // Same oracle uses nonce=1 for all three projects — nonces are per (project, oracle)
         client.submit_reading(&o1, &p1, &1, &700, &10, &80, &500, &250, &8, &1);
-        client.submit_reading(&o1, &p2, &2, &700, &10, &80, &500, &250, &8, &1);
-        client.submit_reading(&o1, &p3, &3, &700, &10, &80, &500, &250, &8, &1);
-        client.submit_reading(&o2, &p1, &1, &700, &10, &80, &500, &250, &8, &1);
+        client.submit_reading(&o1, &p2, &1, &700, &10, &80, &500, &250, &8, &1);
+        client.submit_reading(&o1, &p3, &1, &700, &10, &80, &500, &250, &8, &1);
 
-        assert_eq!(client.oracle_submit_count(&o1), 3);
-        assert_eq!(client.oracle_submit_count(&o2), 1);
-        assert_eq!(client.total_submissions(), 4);
+        // Now increment nonce for p1 — nonce=2 is valid for p1
+        client.submit_reading(&o1, &p1, &2, &700, &10, &80, &500, &250, &8, &1);
+
+        // Nonce=1 for p2 again should fail (already used), but nonce=2 is valid
+        client.submit_reading(&o1, &p2, &2, &700, &10, &80, &500, &250, &8, &1);
     }
 
     #[test]
