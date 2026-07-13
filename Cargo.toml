@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "contracts/shared",
     "contracts/credit_token",
     "contracts/credit_factory",
     "contracts/verification_oracle",

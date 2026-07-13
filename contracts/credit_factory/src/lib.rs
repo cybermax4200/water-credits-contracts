@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+use shared::generate_project_id;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN, Env, String,
     Symbol, Val, Vec,
@@ -101,17 +102,7 @@ impl CreditFactory {
             .unwrap();
         let timestamp = e.ledger().timestamp();
 
-        // Generate unique project ID from count + timestamp
-        let mut preimage: Bytes = Bytes::new(&e);
-        {
-            let count_bytes = count.to_be_bytes();
-            preimage.append(&Bytes::from_array(&e, &count_bytes));
-        }
-        {
-            let ts_bytes = timestamp.to_be_bytes();
-            preimage.append(&Bytes::from_array(&e, &ts_bytes));
-        }
-        let project_id: BytesN<32> = e.crypto().sha256(&preimage);
+        let project_id: BytesN<32> = generate_project_id(&e, count, timestamp);
 
         // Deploy new credit_token contract
         let salt = project_id.clone();

@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+use shared::generate_project_id;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String, Vec};
 
 #[cfg(test)]
@@ -80,14 +81,7 @@ impl ProjectRegistry {
         let count: u64 = e.storage().instance().get(&DataKey::ProjectCount).unwrap();
         let timestamp = e.ledger().timestamp();
 
-        let count_bytes = count.to_be_bytes();
-        let ts_bytes = timestamp.to_be_bytes();
-        let project_id = BytesN::from_array(&e, &{
-            let mut arr = [0u8; 32];
-            arr[..8].copy_from_slice(&count_bytes);
-            arr[8..16].copy_from_slice(&ts_bytes);
-            arr
-        });
+        let project_id = generate_project_id(&e, count, timestamp);
 
         let project = ProjectEntry {
             id: project_id.clone(),

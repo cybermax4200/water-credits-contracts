@@ -10,6 +10,7 @@ verification_oracle = { path = "../contracts/verification_oracle", features = ["
 retirement_registry = { path = "../contracts/retirement_registry", features = ["testutils"] }
 project_registry = { path = "../contracts/project_registry", features = ["testutils"] }
 governance = { path = "../contracts/governance", features = ["testutils"] }
+shared = { path = "../contracts/shared" }
 soroban-sdk = "20.0.0"
 
 [lib]
