@@ -109,10 +109,11 @@ State transitions:
 
 #### Nonce replay protection
 
-Each oracle has a monotonically-increasing nonce stored under
-`OracleNonce(oracle)`. On each `submit_reading` call the contract checks
-`nonce == stored + 1`. If the check fails the call panics with
-`"invalid nonce"`. This prevents replay of old readings.
+Each (project, oracle) pair has a monotonically-increasing nonce stored under
+`OracleNonce(project_id, oracle)`. On each `submit_reading` call the contract
+checks `nonce == stored + 1`. If the check fails the call panics with
+`"invalid nonce"`. This prevents replay of old readings. Nonces are independent
+across projects — an oracle can use the same nonce for different projects.
 
 #### Submission statistics
 
@@ -255,7 +256,7 @@ approval threshold.
 | `OracleActive(Address)` | `bool` | Whitelist entry |
 | `OracleCount` | `u32` | Whitelist size |
 | `Config` | `OracleConfig` | Protocol parameters |
-| `OracleNonce(Address)` | `u64` | Last accepted nonce per oracle |
+| `OracleNonce(BytesN<32>, Address)` | `u64` | Last accepted nonce per (project, oracle) |
 | `OracleSubmitted(BytesN<32>, Address)` | `bool` | Dedup: oracle × window |
 | `OracleSubmitCount(Address)` | `u64` | Lifetime submission count |
 | `TotalSubmissions` | `u64` | Protocol-wide submission count |
@@ -283,7 +284,7 @@ The following properties must hold at all times:
 
 1. **Supply conservation**: `total_supply + total_retired == sum(balances) + sum(burned_via_admin)`
 2. **No over-mint**: `total_supply <= max_supply` (when max_supply > 0)
-3. **Nonce monotonicity**: `OracleNonce[oracle]` never decreases
+3. **Nonce monotonicity**: `OracleNonce[project_id, oracle]` never decreases
 4. **Window finality**: A finalized window's `finalized = true` is never reverted
    (reset_window only operates on non-finalized windows)
 5. **Retirement immutability**: Records in `retirement_registry` are
