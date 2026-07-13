@@ -1,8 +1,8 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env, IntoVal, Symbol,
-    Val, Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN, Env, IntoVal,
+    Symbol, Val, Vec,
 };
 
 #[cfg(test)]
@@ -12,6 +12,10 @@ const EVENT_READING_VERIFIED: Symbol = symbol_short!("rdng_vrfy");
 const EVENT_ORACLE_STAKED: Symbol = symbol_short!("orc_stk");
 const EVENT_ORACLE_UNSTAKED: Symbol = symbol_short!("orc_unst");
 const EVENT_ORACLE_SLASHED: Symbol = symbol_short!("orc_slsh");
+const EVENT_ORACLE_COMMITTED: Symbol = symbol_short!("orc_cmt");
+const EVENT_ORACLE_REVEALED: Symbol = symbol_short!("orc_rvl");
+const EVENT_ORACLE_MISSED_REVEAL: Symbol = symbol_short!("orc_mr");
+const EVENT_WINDOW_OPENED: Symbol = symbol_short!("wnd_opn");
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -63,11 +67,23 @@ pub struct OracleConfig {
     pub treasury: Address,
     pub min_stake: i128,
     pub unstake_cooldown_secs: u64,
+    pub commit_phase_secs: u64,
+    pub reveal_phase_secs: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WindowPhase {
+    Commit,
+    Reveal,
+    Finalized,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowState {
+    pub phase: WindowPhase,
+    pub opened_at: u64,
     pub submissions: Vec<ReadingSubmission>,
     pub finalized: bool,
 }
@@ -87,6 +103,27 @@ pub struct StakeInfo {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommitInfo {
+    pub commitment: BytesN<32>,
+    pub nonce: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RevealParams {
+    pub nonce: u64,
+    pub ph: i64,
+    pub turbidity: i64,
+    pub dissolved_oxygen: i64,
+    pub flow_rate: i64,
+    pub temperature: i64,
+    pub total_nitrogen: i64,
+    pub total_phosphorus: i64,
+    pub salt: BytesN<32>,
+}
+
+#[contracttype]
 pub enum DataKey {
     Admin,
     OracleActive(Address),
@@ -103,6 +140,9 @@ pub enum DataKey {
     TotalSubmissions,
     OracleStake(Address),
     OracleSlashed(Address),
+    OracleCommitted((BytesN<32>, Address)),
+    OracleRevealed((BytesN<32>, Address)),
+    OracleMissedReveals(Address),
 }
 
 fn has_admin(e: &Env) -> bool {
@@ -115,6 +155,34 @@ fn read_admin(e: &Env) -> Address {
 
 fn read_config(e: &Env) -> OracleConfig {
     e.storage().instance().get(&DataKey::Config).unwrap()
+}
+
+/// Compute SHA-256(reading || salt) for commit-reveal scheme.
+/// Hashes: nonce(8B) || ph(8B) || turbidity(8B) || dissolved_oxygen(8B) || flow_rate(8B) || temperature(8B) || total_nitrogen(8B) || total_phosphorus(8B) || salt(32B)
+fn sha256_commitment(
+    e: &Env,
+    nonce: u64,
+    ph: i64,
+    turbidity: i64,
+    dissolved_oxygen: i64,
+    flow_rate: i64,
+    temperature: i64,
+    total_nitrogen: i64,
+    total_phosphorus: i64,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    let mut data: Bytes = Bytes::new(e);
+    data.append(&Bytes::from_array(e, &nonce.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &ph.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &turbidity.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &dissolved_oxygen.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &flow_rate.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &temperature.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &total_nitrogen.to_be_bytes()));
+    data.append(&Bytes::from_array(e, &total_phosphorus.to_be_bytes()));
+    let salt_buf: [u8; 32] = salt.to_array();
+    data.append(&Bytes::from_array(e, &salt_buf));
+    e.crypto().sha256(&data)
 }
 
 fn median_i64(e: &Env, values: &Vec<i64>) -> i64 {
@@ -196,6 +264,8 @@ impl VerificationOracle {
             treasury,
             min_stake: 1000,
             unstake_cooldown_secs: 86400,
+            commit_phase_secs: 300,
+            reveal_phase_secs: 300,
         };
         e.storage().instance().set(&DataKey::Config, &config);
     }
@@ -426,6 +496,8 @@ fn submit_reading_impl(
             .instance()
             .get(&DataKey::WindowState(project_id.clone()))
             .unwrap_or(WindowState {
+                phase: WindowPhase::Reveal,
+                opened_at: e.ledger().timestamp(),
                 submissions: Vec::new(&e),
                 finalized: false,
             });
@@ -682,8 +754,10 @@ fn submit_reading_impl(
                 .remove(&DataKey::OracleSubmitted(project_id.clone(), sub.oracle));
         }
 
-        // Replace with a fresh empty window
+        // Replace with a fresh empty window in Reveal phase (for direct submissions)
         let fresh = WindowState {
+            phase: WindowPhase::Reveal,
+            opened_at: e.ledger().timestamp(),
             submissions: Vec::new(&e),
             finalized: false,
         };
@@ -898,6 +972,552 @@ fn submit_reading_impl(
         let config: OracleConfig = read_config(&e);
         config.staking_token
     }
+
+    // ── Commit-Reveal Scheme ──
+
+    /// Open a new commit-reveal window for a project. Starts the commit phase.
+    /// Only callable by admin. Cannot open a new window if one is already active.
+    pub fn open_window(e: Env, admin: Address, project_id: BytesN<32>) {
+        admin.require_auth();
+        let stored: Address = read_admin(&e);
+        if admin != stored {
+            panic!("unauthorized");
+        }
+
+        let existing: Option<WindowState> = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()));
+        match existing {
+            Some(ref w) if !w.finalized => panic!("window already active"),
+            _ => {}
+        }
+
+        let window = WindowState {
+            phase: WindowPhase::Commit,
+            opened_at: e.ledger().timestamp(),
+            submissions: Vec::new(&e),
+            finalized: false,
+        };
+        e.storage()
+            .instance()
+            .set(&DataKey::WindowState(project_id.clone()), &window);
+
+        e.events()
+            .publish((EVENT_WINDOW_OPENED,), (project_id,));
+    }
+
+    /// Get the current phase of a project's window.
+    pub fn get_window_phase(e: Env, project_id: BytesN<32>) -> Option<WindowPhase> {
+        let window: Option<WindowState> = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id));
+        window.map(|w| w.phase)
+    }
+
+    /// Commit a SHA-256 hash of (reading + salt) during the commit phase.
+    /// The oracle computes the hash off-chain and submits only the commitment.
+    pub fn commit_reading(
+        e: Env,
+        oracle: Address,
+        project_id: BytesN<32>,
+        nonce: u64,
+        commitment: BytesN<32>,
+    ) {
+        oracle.require_auth();
+
+        if !e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleActive(oracle.clone()))
+            .unwrap_or(false)
+        {
+            panic!("oracle not active");
+        }
+
+        let config: OracleConfig = read_config(&e);
+        if config.min_stake > 0 {
+            let stake_info: StakeInfo = e
+                .storage()
+                .instance()
+                .get(&DataKey::OracleStake(oracle.clone()))
+                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            if stake_info.amount < config.min_stake {
+                panic!("insufficient stake");
+            }
+        }
+
+        let expected_nonce: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleNonce((project_id.clone(), oracle.clone())))
+            .unwrap_or(0)
+            + 1;
+        if nonce != expected_nonce {
+            panic!("invalid nonce");
+        }
+
+        let window: WindowState = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()))
+            .expect("no window open");
+
+        if window.finalized {
+            panic!("window already finalized");
+        }
+        if window.phase != WindowPhase::Commit {
+            panic!("not in commit phase");
+        }
+
+        let key = DataKey::OracleCommitted((project_id.clone(), oracle.clone()));
+        if e.storage().instance().has(&key) {
+            panic!("oracle already committed");
+        }
+
+        e.storage()
+            .instance()
+            .set(
+                &DataKey::OracleNonce((project_id.clone(), oracle.clone())),
+                &nonce,
+            );
+
+        e.storage().instance().set(
+            &key,
+            &CommitInfo {
+                commitment: commitment.clone(),
+                nonce,
+            },
+        );
+
+        e.events()
+            .publish((EVENT_ORACLE_COMMITTED,), (oracle, project_id, commitment));
+    }
+
+    /// Transition a window from commit phase to reveal phase.
+    /// Callable by anyone after the commit phase duration has elapsed.
+    pub fn begin_reveal_phase(e: Env, project_id: BytesN<32>) {
+        let window: WindowState = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()))
+            .expect("no window open");
+
+        if window.finalized {
+            panic!("window already finalized");
+        }
+        if window.phase != WindowPhase::Commit {
+            panic!("not in commit phase");
+        }
+
+        let config: OracleConfig = read_config(&e);
+        let now = e.ledger().timestamp();
+        if now < window.opened_at + config.commit_phase_secs {
+            panic!("commit phase not ended");
+        }
+
+        let mut window = window;
+        window.phase = WindowPhase::Reveal;
+        e.storage()
+            .instance()
+            .set(&DataKey::WindowState(project_id.clone()), &window);
+    }
+
+    /// Reveal the actual reading values + salt during the reveal phase.
+    /// The contract recomputes the hash and verifies it matches the stored commitment.
+    pub fn reveal_reading(
+        e: Env,
+        oracle: Address,
+        project_id: BytesN<32>,
+        params: RevealParams,
+    ) -> Option<VerificationResult> {
+        oracle.require_auth();
+
+        if !e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleActive(oracle.clone()))
+            .unwrap_or(false)
+        {
+            panic!("oracle not active");
+        }
+
+        let config: OracleConfig = read_config(&e);
+        if config.min_stake > 0 {
+            let stake_info: StakeInfo = e
+                .storage()
+                .instance()
+                .get(&DataKey::OracleStake(oracle.clone()))
+                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            if stake_info.amount < config.min_stake {
+                panic!("insufficient stake");
+            }
+        }
+
+        let mut window: WindowState = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()))
+            .expect("no window open");
+
+        if window.finalized {
+            panic!("window already finalized");
+        }
+        if window.phase != WindowPhase::Reveal {
+            panic!("not in reveal phase");
+        }
+
+        let commit_key = DataKey::OracleCommitted((project_id.clone(), oracle.clone()));
+        let commit_info: CommitInfo = e
+            .storage()
+            .instance()
+            .get(&commit_key)
+            .expect("oracle did not commit");
+
+        if commit_info.nonce != params.nonce {
+            panic!("nonce mismatch with commitment");
+        }
+
+        let reveal_key = DataKey::OracleRevealed((project_id.clone(), oracle.clone()));
+        if e.storage().instance().has(&reveal_key) {
+            panic!("oracle already revealed");
+        }
+
+        // Verify the hash matches the commitment
+        let computed = sha256_commitment(
+            &e,
+            params.nonce,
+            params.ph,
+            params.turbidity,
+            params.dissolved_oxygen,
+            params.flow_rate,
+            params.temperature,
+            params.total_nitrogen,
+            params.total_phosphorus,
+            &params.salt,
+        );
+        if computed != commit_info.commitment {
+            panic!("hash mismatch: revealed values do not match commitment");
+        }
+
+        // Track per-oracle and global submission counts
+        let oracle_count: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleSubmitCount(oracle.clone()))
+            .unwrap_or(0);
+        e.storage()
+            .instance()
+            .set(&DataKey::OracleSubmitCount(oracle.clone()), &(oracle_count + 1));
+        let total: u64 = e
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSubmissions)
+            .unwrap_or(0);
+        e.storage()
+            .instance()
+            .set(&DataKey::TotalSubmissions, &(total + 1));
+
+        let timestamp = e.ledger().timestamp();
+
+        let submission = ReadingSubmission {
+            oracle: oracle.clone(),
+            nonce: params.nonce,
+            timestamp,
+            ph: params.ph,
+            turbidity: params.turbidity,
+            dissolved_oxygen: params.dissolved_oxygen,
+            flow_rate: params.flow_rate,
+            temperature: params.temperature,
+            total_nitrogen: params.total_nitrogen,
+            total_phosphorus: params.total_phosphorus,
+        };
+
+        window.submissions.push_back(submission);
+        e.storage()
+            .instance()
+            .set(&DataKey::WindowState(project_id.clone()), &window);
+
+        e.storage()
+            .instance()
+            .set(&reveal_key, &true);
+
+        e.events()
+            .publish((EVENT_ORACLE_REVEALED,), (oracle, project_id.clone()));
+
+        if window.submissions.len() >= config.min_oracles {
+            Self::finalize_reveals(e, project_id)
+        } else {
+            None
+        }
+    }
+
+    /// Finalize a commit-reveal window after the reveal phase ends.
+    /// Penalizes oracles that committed but did not reveal.
+    /// Can be called by anyone once the reveal phase duration has elapsed.
+    pub fn finalize_window(
+        e: Env,
+        project_id: BytesN<32>,
+    ) -> Option<VerificationResult> {
+        let window: WindowState = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()))
+            .expect("no window open");
+
+        if window.finalized {
+            panic!("window already finalized");
+        }
+        if window.phase != WindowPhase::Reveal {
+            panic!("not in reveal phase");
+        }
+
+        let config: OracleConfig = read_config(&e);
+        let now = e.ledger().timestamp();
+        let reveal_end = window.opened_at + config.commit_phase_secs + config.reveal_phase_secs;
+        if now < reveal_end {
+            panic!("reveal phase not ended");
+        }
+
+        Self::penalize_non_revealers(&e, &project_id);
+        Self::finalize_reveals(e, project_id)
+    }
+
+    /// Internal: penalize oracles that committed but did not reveal.
+    fn penalize_non_revealers(e: &Env, project_id: &BytesN<32>) {
+        let oracles: Vec<Address> = e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleList)
+            .unwrap_or_else(|| Vec::new(e));
+
+        let config: OracleConfig = read_config(e);
+
+        for i in 0..oracles.len() {
+            let oracle = oracles.get(i).unwrap();
+            let commit_key = DataKey::OracleCommitted((project_id.clone(), oracle.clone()));
+            let reveal_key = DataKey::OracleRevealed((project_id.clone(), oracle.clone()));
+
+            let committed = e.storage().instance().has(&commit_key);
+            let revealed = e.storage().instance().has(&reveal_key);
+
+            if committed && !revealed {
+                // Increment missed reveals counter
+                let missed: u64 = e
+                    .storage()
+                    .instance()
+                    .get(&DataKey::OracleMissedReveals(oracle.clone()))
+                    .unwrap_or(0);
+                e.storage().instance().set(
+                    &DataKey::OracleMissedReveals(oracle.clone()),
+                    &(missed + 1),
+                );
+
+                // Slash the oracle's stake
+                let mut stake_info: StakeInfo = e
+                    .storage()
+                    .instance()
+                    .get(&DataKey::OracleStake(oracle.clone()))
+                    .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+
+                if stake_info.amount > 0 {
+                    let slash_amount = stake_info.amount.min(config.min_stake);
+                    if slash_amount > 0 {
+                        stake_info.amount -= slash_amount;
+                        e.storage().instance().set(
+                            &DataKey::OracleStake(oracle.clone()),
+                            &stake_info,
+                        );
+
+                        let transfer_args: Vec<Val> = vec![
+                            e,
+                            e.current_contract_address().to_val(),
+                            config.treasury.to_val(),
+                            slash_amount.into_val(e),
+                        ];
+                        e.invoke_contract::<()>(
+                            &config.staking_token,
+                            &Symbol::new(e, "transfer"),
+                            transfer_args,
+                        );
+
+                        let slash_record = SlashReason {
+                            reason: 3, // missed_reveal
+                            timestamp: e.ledger().timestamp(),
+                        };
+                        e.storage().instance().set(
+                            &DataKey::OracleSlashed(oracle.clone()),
+                            &slash_record,
+                        );
+
+                        e.events().publish(
+                            (EVENT_ORACLE_MISSED_REVEAL,),
+                            (oracle.clone(), slash_amount),
+                        );
+                    }
+                }
+
+                // Clean up commitment
+                e.storage()
+                    .instance()
+                    .remove(&commit_key);
+            }
+        }
+    }
+
+    /// Internal: finalize a window with current submissions (used by both
+    /// auto-finalization in reveal_reading and explicit finalize_window).
+    fn finalize_reveals(
+        e: Env,
+        project_id: BytesN<32>,
+    ) -> Option<VerificationResult> {
+        let mut window: WindowState = e
+            .storage()
+            .instance()
+            .get(&DataKey::WindowState(project_id.clone()))
+            .expect("no window open");
+
+        if window.finalized {
+            return None;
+        }
+
+        let config: OracleConfig = read_config(&e);
+        let subs = &window.submissions;
+        let n_subs = subs.len();
+
+        if n_subs < config.min_oracles {
+            return None;
+        }
+
+        let mut ph_vals: Vec<i64> = Vec::new(&e);
+        let mut turb_vals: Vec<i64> = Vec::new(&e);
+        let mut do_vals: Vec<i64> = Vec::new(&e);
+        let mut temp_vals: Vec<i64> = Vec::new(&e);
+        let mut flow_vals: Vec<i64> = Vec::new(&e);
+        let mut n_vals: Vec<i64> = Vec::new(&e);
+        let mut p_vals: Vec<i64> = Vec::new(&e);
+        for k in 0..n_subs {
+            let s = subs.get(k).unwrap();
+            ph_vals.push_back(s.ph);
+            turb_vals.push_back(s.turbidity);
+            do_vals.push_back(s.dissolved_oxygen);
+            temp_vals.push_back(s.temperature);
+            flow_vals.push_back(s.flow_rate);
+            n_vals.push_back(s.total_nitrogen);
+            p_vals.push_back(s.total_phosphorus);
+        }
+
+        let med_ph = median_i64(&e, &ph_vals);
+        let med_turb = median_i64(&e, &turb_vals);
+        let med_do = median_i64(&e, &do_vals);
+        let med_temp = median_i64(&e, &temp_vals);
+        let med_flow = median_i64(&e, &flow_vals);
+        let med_n = median_i64(&e, &n_vals);
+        let med_p = median_i64(&e, &p_vals);
+
+        let baseline_n: i128 = 10;
+        let n_removed: i128 = if (med_n as i128) < baseline_n {
+            (baseline_n - med_n as i128) * med_flow as i128 * 3600 / 1000000
+        } else {
+            0
+        };
+
+        let baseline_p: i128 = 2;
+        let p_removed: i128 = if (med_p as i128) < baseline_p {
+            (baseline_p - med_p as i128) * med_flow as i128 * 3600 / 1000000
+        } else {
+            0
+        };
+
+        let mut penalty: i64 = 0;
+        if med_ph < config.quality_threshold_ph || med_ph > (config.quality_threshold_ph + 100) {
+            penalty += 2000;
+        }
+        if med_turb > config.quality_threshold_turbidity {
+            penalty += 2000;
+        }
+        if med_do < config.quality_threshold_do {
+            penalty += 2000;
+        }
+        if med_temp > config.quality_threshold_temp {
+            penalty += 1000;
+        }
+        if penalty > 8000 {
+            penalty = 8000;
+        }
+
+        let volumetric_credit: i128 = if med_flow > 0 {
+            med_flow as i128 * 100 / 1000
+        } else {
+            0
+        };
+
+        let n_credit: i128 = n_removed * config.credit_per_kg_n;
+        let p_credit: i128 = p_removed * config.credit_per_kg_p;
+        let gross = n_credit + p_credit + volumetric_credit;
+        let total: i128 = gross * (10000 - penalty as i128) / 10000;
+
+        let result = VerificationResult {
+            project_id: project_id.clone(),
+            n_removal_kg: n_removed,
+            p_removal_kg: p_removed,
+            quality_penalty: penalty,
+            volumetric_credit,
+            total_credits: total,
+            oracle_count: window.submissions.len(),
+            finalized_at: e.ledger().timestamp(),
+        };
+
+        e.storage()
+            .instance()
+            .set(&DataKey::LastResult(project_id.clone()), &result);
+
+        let mut history: Vec<VerificationResult> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ResultHistory(project_id.clone()))
+            .unwrap_or_else(|| Vec::new(&e));
+        history.push_back(result.clone());
+        e.storage()
+            .instance()
+            .set(&DataKey::ResultHistory(project_id.clone()), &history);
+
+        window.finalized = true;
+        window.phase = WindowPhase::Finalized;
+        e.storage()
+            .instance()
+            .set(&DataKey::WindowState(project_id.clone()), &window);
+
+        // Clean up commit/reveal markers for all oracles in this window
+        let oracles: Vec<Address> = e
+            .storage()
+            .instance()
+            .get(&DataKey::OracleList)
+            .unwrap_or_else(|| Vec::new(&e));
+        for i in 0..oracles.len() {
+            let oracle = oracles.get(i).unwrap();
+            e.storage().instance().remove(
+                &DataKey::OracleCommitted((project_id.clone(), oracle.clone())),
+            );
+            e.storage().instance().remove(
+                &DataKey::OracleRevealed((project_id.clone(), oracle.clone())),
+            );
+        }
+
+        e.events()
+            .publish((EVENT_READING_VERIFIED,), (project_id, result.clone()));
+
+        Some(result)
+    }
+
+    /// Get the number of missed reveals for an oracle across all windows.
+    pub fn oracle_missed_reveals(e: Env, oracle: Address) -> u64 {
+        e.storage()
+            .instance()
+            .get(&DataKey::OracleMissedReveals(oracle))
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -951,6 +1571,8 @@ mod tests {
         assert_eq!(config.credit_per_kg_p, 20);
         assert_eq!(config.min_stake, 1000);
         assert_eq!(config.unstake_cooldown_secs, 86400);
+        assert_eq!(config.commit_phase_secs, 300);
+        assert_eq!(config.reveal_phase_secs, 300);
     }
 
     #[test]
@@ -1155,6 +1777,8 @@ mod tests {
             treasury: Address::generate(&e),
             min_stake: 2000,
             unstake_cooldown_secs: 172800,
+            commit_phase_secs: 600,
+            reveal_phase_secs: 600,
         };
         client.update_config(&admin, &new_config);
 
@@ -1864,5 +2488,658 @@ mod tests {
         client.slash(&admin, &oracle, &7000, &2);
         assert_eq!(client.get_stake(&oracle).amount, 0);
         assert_eq!(client.get_slash_record(&oracle).unwrap().reason, 2);
+    }
+
+    // ── Commit-Reveal Scheme Tests ──
+
+    fn setup_oracles_with_stakes(
+        e: &Env,
+        admin: &Address,
+        client: &VerificationOracleClient<'static>,
+        count: u32,
+        stake: i128,
+    ) -> Vec<Address> {
+        let mut oracles = Vec::new(e);
+        for _ in 0..count {
+            let o = Address::generate(e);
+            client.stake(&o, &stake);
+            client.add_oracle(admin, &o);
+            oracles.push_back(o);
+        }
+        oracles
+    }
+
+    fn make_reveal_params(
+        e: &Env,
+        nonce: u64,
+        ph: i64,
+        turbidity: i64,
+        dissolved_oxygen: i64,
+        flow_rate: i64,
+        temperature: i64,
+        total_nitrogen: i64,
+        total_phosphorus: i64,
+        salt: &BytesN<32>,
+    ) -> RevealParams {
+        RevealParams {
+            nonce,
+            ph,
+            turbidity,
+            dissolved_oxygen,
+            flow_rate,
+            temperature,
+            total_nitrogen,
+            total_phosphorus,
+            salt: salt.clone(),
+        }
+    }
+
+    #[test]
+    fn test_commit_reveal_happy_path() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[100u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let phase = client.get_window_phase(&project_id);
+        assert_eq!(phase.unwrap(), WindowPhase::Commit);
+
+        let salt = BytesN::from_array(&e, &[0xAAu8; 32]);
+        let nonce: u64 = 1;
+
+        // Compute expected hash off-chain and commit
+        for i in 0..3u32 {
+            let o = oracles.get(i).unwrap();
+            let commitment = sha256_commitment(
+                &e,
+                nonce,
+                700,
+                10,
+                80,
+                500,
+                250,
+                8,
+                1,
+                &salt,
+            );
+            client.commit_reading(&o, &project_id, &nonce, &commitment);
+        }
+
+        // Advance time past commit phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+
+        client.begin_reveal_phase(&project_id);
+        let phase = client.get_window_phase(&project_id);
+        assert_eq!(phase.unwrap(), WindowPhase::Reveal);
+
+        // All oracles reveal
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        let result = client.reveal_reading(
+            &oracles.get(0).unwrap(),
+            &project_id,
+            &params,
+        );
+        assert!(result.is_none()); // not finalized yet
+
+        client.reveal_reading(
+            &oracles.get(1).unwrap(),
+            &project_id,
+            &params,
+        );
+
+        let result = client.reveal_reading(
+            &oracles.get(2).unwrap(),
+            &project_id,
+            &params,
+        );
+
+        assert!(result.is_some());
+        let res = result.unwrap();
+        assert!(res.total_credits > 0);
+        assert_eq!(res.oracle_count, 3);
+
+        let phase = client.get_window_phase(&project_id);
+        assert_eq!(phase.unwrap(), WindowPhase::Finalized);
+    }
+
+    #[test]
+    fn test_commit_reveal_hash_mismatch_panics() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[101u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0xBBu8; 32]);
+        let nonce: u64 = 1;
+        let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &nonce, &commitment);
+
+        // Advance to reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        // Try to reveal with wrong values (different salt)
+        let wrong_salt = BytesN::from_array(&e, &[0xCCu8; 32]);
+        let wrong_params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &wrong_salt);
+        let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
+            &client.address,
+            &Symbol::new(&e, "reveal_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                wrong_params.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_late_reveal_after_phase_ends_panics() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[102u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0xDDu8; 32]);
+        let nonce: u64 = 1;
+        let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &nonce, &commitment);
+
+        // Advance past both commit and reveal phases
+        e.ledger().set_timestamp(e.ledger().timestamp() + 601);
+
+        // Trying to reveal after reveal phase ended should panic
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
+            &client.address,
+            &Symbol::new(&e, "reveal_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                params.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_commit_without_reveal_penalized() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 4, 1500);
+
+        let project_id = BytesN::from_array(&e, &[103u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0xEEu8; 32]);
+        let nonce: u64 = 1;
+
+        // All 4 oracles commit
+        for i in 0..4u32 {
+            let o = oracles.get(i).unwrap();
+            let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+            client.commit_reading(&o, &project_id, &nonce, &commitment);
+        }
+
+        // Advance to reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        // Only 3 out of 4 oracles reveal
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        for i in 0..3u32 {
+            let o = oracles.get(i).unwrap();
+            client.reveal_reading(
+                &o,
+                &project_id,
+                &params,
+            );
+        }
+
+        // Advance past reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+
+        // finalize_window penalizes the non-revealer
+        let result = client.finalize_window(&project_id);
+        assert!(result.is_some());
+        let res = result.unwrap();
+        assert_eq!(res.oracle_count, 3);
+
+        // The 4th oracle should have a missed reveal
+        let missed = client.oracle_missed_reveals(&oracles.get(3).unwrap());
+        assert_eq!(missed, 1);
+
+        // The 4th oracle should be slashed
+        let slash = client.get_slash_record(&oracles.get(3).unwrap());
+        assert!(slash.is_some());
+        assert_eq!(slash.unwrap().reason, 3); // missed_reveal
+    }
+
+    #[test]
+    fn test_open_window_requires_admin() {
+        let (e, _admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let rando = Address::generate(&e);
+        let project_id = BytesN::from_array(&e, &[104u8; 32]);
+
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "open_window"),
+            vec![&e, rando.to_val(), project_id.to_val()],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cannot_open_window_while_active() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let project_id = BytesN::from_array(&e, &[105u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "open_window"),
+            vec![&e, admin.to_val(), project_id.to_val()],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_commit_requires_active_oracle() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let project_id = BytesN::from_array(&e, &[106u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let inactive = Address::generate(&e);
+        let commitment = BytesN::from_array(&e, &[0xFFu8; 32]);
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "commit_reading"),
+            vec![
+                &e,
+                inactive.to_val(),
+                project_id.to_val(),
+                1u64.into_val(&e),
+                commitment.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cannot_commit_twice() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[107u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let commitment = BytesN::from_array(&e, &[0x11u8; 32]);
+        let nonce: u64 = 1;
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &nonce, &commitment);
+
+        // Second commit from same oracle should fail
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "commit_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                nonce.into_val(&e),
+                commitment.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cannot_reveal_without_committing() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[108u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        // Skip commit phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        let salt = BytesN::from_array(&e, &[0x22u8; 32]);
+        let params = make_reveal_params(&e, 1, 700, 10, 80, 500, 250, 8, 1, &salt);
+        let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
+            &client.address,
+            &Symbol::new(&e, "reveal_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                params.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_begin_reveal_phase_requires_commit_duration_elapsed() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let project_id = BytesN::from_array(&e, &[109u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        // Try to transition before commit phase ends
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "begin_reveal_phase"),
+            vec![&e, project_id.to_val()],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_finalize_window_requires_reveal_duration_elapsed() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[110u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0x33u8; 32]);
+        let nonce: u64 = 1;
+        for i in 0..3u32 {
+            let o = oracles.get(i).unwrap();
+            let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+            client.commit_reading(&o, &project_id, &nonce, &commitment);
+        }
+
+        // Advance to reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        // All oracles reveal
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        for i in 0..3u32 {
+            let o = oracles.get(i).unwrap();
+            client.reveal_reading(
+                &o,
+                &project_id,
+                &params,
+            );
+        }
+
+        // Try to finalize_window before reveal phase ends should fail (already auto-finalized)
+        let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
+            &client.address,
+            &Symbol::new(&e, "finalize_window"),
+            vec![&e, project_id.to_val()],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cannot_reveal_twice() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[111u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0x44u8; 32]);
+        let nonce: u64 = 1;
+        let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &nonce, &commitment);
+
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.reveal_reading(
+            &oracles.get(0).unwrap(),
+            &project_id,
+            &params,
+        );
+
+        // Second reveal should fail
+        let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
+            &client.address,
+            &Symbol::new(&e, "reveal_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                params.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_commit_requires_valid_nonce() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[112u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let commitment = BytesN::from_array(&e, &[0x55u8; 32]);
+
+        // First oracle tries to commit with wrong nonce (should be 1)
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "commit_reading"),
+            vec![
+                &e,
+                oracles.get(0).unwrap().to_val(),
+                project_id.to_val(),
+                5u64.into_val(&e),
+                commitment.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_deterministic() {
+        let (e, _admin, _client) = setup_with_client();
+
+        let salt = BytesN::from_array(&e, &[0xAAu8; 32]);
+        let h1 = sha256_commitment(&e, 1, 700, 10, 80, 500, 250, 8, 1, &salt);
+        let h2 = sha256_commitment(&e, 1, 700, 10, 80, 500, 250, 8, 1, &salt);
+        assert_eq!(h1, h2);
+
+        // Different values produce different hashes
+        let h3 = sha256_commitment(&e, 1, 701, 10, 80, 500, 250, 8, 1, &salt);
+        assert_ne!(h1, h3);
+
+        // Different salts produce different hashes
+        let salt2 = BytesN::from_array(&e, &[0xBBu8; 32]);
+        let h4 = sha256_commitment(&e, 1, 700, 10, 80, 500, 250, 8, 1, &salt2);
+        assert_ne!(h1, h4);
+    }
+
+    #[test]
+    fn test_finalize_window_with_insufficient_reveals() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 5, 1500);
+
+        let project_id = BytesN::from_array(&e, &[113u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0x66u8; 32]);
+        let nonce: u64 = 1;
+
+        // All 5 commit
+        for i in 0..5u32 {
+            let o = oracles.get(i).unwrap();
+            let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+            client.commit_reading(&o, &project_id, &nonce, &commitment);
+        }
+
+        // Advance to reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        // Only 2 reveal (below min_oracles=3)
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.reveal_reading(
+            &oracles.get(0).unwrap(),
+            &project_id,
+            &params,
+        );
+        client.reveal_reading(
+            &oracles.get(1).unwrap(),
+            &project_id,
+            &params,
+        );
+
+        // Advance past reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+
+        // finalize_window - but with only 2 reveals (below min), no result
+        let result = client.finalize_window(&project_id);
+        assert!(result.is_none());
+
+        // But the 3 non-revealers should be penalized
+        for i in 2..5u32 {
+            let missed = client.oracle_missed_reveals(&oracles.get(i).unwrap());
+            assert_eq!(missed, 1);
+        }
+    }
+
+    #[test]
+    fn test_reset_window_clears_commit_reveal_state() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 3, 1500);
+
+        let project_id = BytesN::from_array(&e, &[114u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0x77u8; 32]);
+        let nonce: u64 = 1;
+        let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &nonce, &commitment);
+
+        // Reset should work on commit-phase window
+        client.reset_window(&admin, &project_id);
+
+        // Window should be back to Reveal phase (reset creates Reveal windows for direct submissions)
+        // And oracle should be able to re-commit with a new nonce
+        let commitment2 = sha256_commitment(&e, 1, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.commit_reading(&oracles.get(0).unwrap(), &project_id, &1, &commitment2);
+    }
+
+    #[test]
+    fn test_commit_requires_min_stake() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        // Add oracle with no stake (min_stake=0 first)
+        let mut config = client.get_config();
+        config.min_stake = 0;
+        client.update_config(&admin, &config);
+
+        let oracle = Address::generate(&e);
+        client.add_oracle(&admin, &oracle);
+
+        let project_id = BytesN::from_array(&e, &[115u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        // Re-enable min_stake
+        config.min_stake = 5000;
+        client.update_config(&admin, &config);
+
+        let commitment = BytesN::from_array(&e, &[0x88u8; 32]);
+        let result = e.try_invoke_contract::<_, ()>(
+            &client.address,
+            &Symbol::new(&e, "commit_reading"),
+            vec![
+                &e,
+                oracle.to_val(),
+                project_id.to_val(),
+                1u64.into_val(&e),
+                commitment.to_val(),
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_finalize_window_after_reveal_phase_penalizes_all_non_revealers() {
+        let (e, admin, client) = setup_with_client();
+        e.mock_all_auths();
+
+        let oracles = setup_oracles_with_stakes(&e, &admin, &client, 4, 1500);
+
+        let project_id = BytesN::from_array(&e, &[116u8; 32]);
+        client.open_window(&admin, &project_id);
+
+        let salt = BytesN::from_array(&e, &[0x99u8; 32]);
+        let nonce: u64 = 1;
+
+        // All 4 commit
+        for i in 0..4u32 {
+            let o = oracles.get(i).unwrap();
+            let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+            client.commit_reading(&o, &project_id, &nonce, &commitment);
+        }
+
+        // Advance to reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+        client.begin_reveal_phase(&project_id);
+
+        // Only oracle 0 reveals
+        let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
+        client.reveal_reading(
+            &oracles.get(0).unwrap(),
+            &project_id,
+            &params,
+        );
+
+        // Advance past reveal phase
+        e.ledger().set_timestamp(e.ledger().timestamp() + 301);
+
+        let result = client.finalize_window(&project_id);
+        assert!(result.is_none()); // Only 1 reveal, below min_oracles
+
+        // Oracles 1, 2, 3 should all have missed reveals
+        for i in 1..4u32 {
+            let missed = client.oracle_missed_reveals(&oracles.get(i).unwrap());
+            assert_eq!(missed, 1);
+            let slash = client.get_slash_record(&oracles.get(i).unwrap());
+            assert!(slash.is_some());
+            assert_eq!(slash.unwrap().reason, 3);
+        }
     }
 }
