@@ -4,8 +4,8 @@
 //! project IDs for the same (count, timestamp) inputs, using the canonical
 //! `shared::generate_project_id` helper.
 
-use soroban_sdk::{testutils::Address as _, BytesN, Env};
 use shared::generate_project_id;
+use soroban_sdk::{testutils::Address as _, BytesN, Env};
 
 /// The same (count, timestamp) pair must produce the same ID via the shared helper.
 #[test]
@@ -16,7 +16,10 @@ fn test_shared_helper_deterministic_across_envs() {
     let id1 = generate_project_id(&e1, 0, 1_700_000_000);
     let id2 = generate_project_id(&e2, 0, 1_700_000_000);
 
-    assert_eq!(id1, id2, "shared helper must be deterministic across env instances");
+    assert_eq!(
+        id1, id2,
+        "shared helper must be deterministic across env instances"
+    );
 }
 
 /// Verify that both contracts would produce the same ID for the first few projects.
@@ -35,7 +38,10 @@ fn test_first_five_project_ids_match() {
         // Verify that bytes 16..32 are NOT all zeros (which would indicate old byte-packing)
         let arr = id.to_array();
         let trailing_zeros = arr[16..].iter().all(|&b| b == 0);
-        assert!(!trailing_zeros, "project ID must be a SHA-256 hash, not raw byte-packing");
+        assert!(
+            !trailing_zeros,
+            "project ID must be a SHA-256 hash, not raw byte-packing"
+        );
     }
 }
 

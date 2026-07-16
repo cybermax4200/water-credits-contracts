@@ -278,7 +278,10 @@ impl VerificationOracle {
         if admin != stored {
             panic!("unauthorized");
         }
-        if e.storage().instance().has(&DataKey::OracleActive(oracle.clone())) {
+        if e.storage()
+            .instance()
+            .has(&DataKey::OracleActive(oracle.clone()))
+        {
             panic!("oracle already active");
         }
         let count: u32 = e.storage().instance().get(&DataKey::OracleCount).unwrap();
@@ -291,7 +294,10 @@ impl VerificationOracle {
                 .storage()
                 .instance()
                 .get(&DataKey::OracleStake(oracle.clone()))
-                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+                .unwrap_or(StakeInfo {
+                    amount: 0,
+                    unstake_request: None,
+                });
             if stake_info.amount < config.min_stake {
                 panic!("insufficient stake");
             }
@@ -303,15 +309,9 @@ impl VerificationOracle {
             .instance()
             .set(&DataKey::OracleCount, &(count + 1));
 
-        let mut list: Vec<Address> = e
-            .storage()
-            .instance()
-            .get(&DataKey::OracleList)
-            .unwrap();
+        let mut list: Vec<Address> = e.storage().instance().get(&DataKey::OracleList).unwrap();
         list.push_back(oracle);
-        e.storage()
-            .instance()
-            .set(&DataKey::OracleList, &list);
+        e.storage().instance().set(&DataKey::OracleList, &list);
     }
 
     /// Remove an oracle from the whitelist. Must maintain at least min_oracles.
@@ -322,7 +322,8 @@ impl VerificationOracle {
         if admin != stored {
             panic!("unauthorized");
         }
-        if !e.storage()
+        if !e
+            .storage()
             .instance()
             .has(&DataKey::OracleActive(oracle.clone()))
         {
@@ -332,7 +333,10 @@ impl VerificationOracle {
             .storage()
             .instance()
             .get(&DataKey::OracleStake(oracle.clone()))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            });
         if stake_info.amount > 0 {
             panic!("oracle must unstake before removal");
         }
@@ -349,11 +353,7 @@ impl VerificationOracle {
             .set(&DataKey::OracleCount, &(count - 1));
 
         // Filter the oracle out of the list
-        let list: Vec<Address> = e
-            .storage()
-            .instance()
-            .get(&DataKey::OracleList)
-            .unwrap();
+        let list: Vec<Address> = e.storage().instance().get(&DataKey::OracleList).unwrap();
         let mut filtered: Vec<Address> = Vec::new(&e);
         for i in 0..list.len() {
             let addr = list.get(i).unwrap();
@@ -361,9 +361,7 @@ impl VerificationOracle {
                 filtered.push_back(addr);
             }
         }
-        e.storage()
-            .instance()
-            .set(&DataKey::OracleList, &filtered);
+        e.storage().instance().set(&DataKey::OracleList, &filtered);
     }
 
     /// Check if an oracle address is whitelisted and active.
@@ -399,9 +397,25 @@ impl VerificationOracle {
         total_nitrogen: i64,
         total_phosphorus: i64,
     ) -> Option<VerificationResult> {
-        let result = Self::submit_reading_impl(e.clone(), oracle, project_id.clone(), nonce, ph, turbidity, dissolved_oxygen, flow_rate, temperature, total_nitrogen, total_phosphorus);
+        let result = Self::submit_reading_impl(
+            e.clone(),
+            oracle,
+            project_id.clone(),
+            nonce,
+            ph,
+            turbidity,
+            dissolved_oxygen,
+            flow_rate,
+            temperature,
+            total_nitrogen,
+            total_phosphorus,
+        );
         if let Some(ref res) = result {
-            if let Some(config) = e.storage().instance().get::<_, ProjectConfig>(&DataKey::ProjectConfig(project_id)) {
+            if let Some(config) = e
+                .storage()
+                .instance()
+                .get::<_, ProjectConfig>(&DataKey::ProjectConfig(project_id))
+            {
                 let mint_args: Vec<Val> = vec![
                     &e,
                     e.current_contract_address().to_val(),
@@ -417,22 +431,23 @@ impl VerificationOracle {
         }
         result
     }
-fn submit_reading_impl(
-    e: Env,
-    oracle: Address,
-    project_id: BytesN<32>,
-    nonce: u64,
-    ph: i64,
-    turbidity: i64,
-    dissolved_oxygen: i64,
-    flow_rate: i64,
-    temperature: i64,
-    total_nitrogen: i64,
-    total_phosphorus: i64,
-) -> Option<VerificationResult> {
+    fn submit_reading_impl(
+        e: Env,
+        oracle: Address,
+        project_id: BytesN<32>,
+        nonce: u64,
+        ph: i64,
+        turbidity: i64,
+        dissolved_oxygen: i64,
+        flow_rate: i64,
+        temperature: i64,
+        total_nitrogen: i64,
+        total_phosphorus: i64,
+    ) -> Option<VerificationResult> {
         oracle.require_auth();
 
-        if !e.storage()
+        if !e
+            .storage()
             .instance()
             .get(&DataKey::OracleActive(oracle.clone()))
             .unwrap_or(false)
@@ -446,7 +461,10 @@ fn submit_reading_impl(
                 .storage()
                 .instance()
                 .get(&DataKey::OracleStake(oracle.clone()))
-                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+                .unwrap_or(StakeInfo {
+                    amount: 0,
+                    unstake_request: None,
+                });
             if stake_info.amount < config.min_stake {
                 panic!("insufficient stake");
             }
@@ -461,9 +479,10 @@ fn submit_reading_impl(
         if nonce != expected_nonce {
             panic!("invalid nonce");
         }
-        e.storage()
-            .instance()
-            .set(&DataKey::OracleNonce((project_id.clone(), oracle.clone())), &nonce);
+        e.storage().instance().set(
+            &DataKey::OracleNonce((project_id.clone(), oracle.clone())),
+            &nonce,
+        );
 
         // Track per-oracle and global submission counts
         let oracle_count: u64 = e
@@ -471,9 +490,10 @@ fn submit_reading_impl(
             .instance()
             .get(&DataKey::OracleSubmitCount(oracle.clone()))
             .unwrap_or(0);
-        e.storage()
-            .instance()
-            .set(&DataKey::OracleSubmitCount(oracle.clone()), &(oracle_count + 1));
+        e.storage().instance().set(
+            &DataKey::OracleSubmitCount(oracle.clone()),
+            &(oracle_count + 1),
+        );
         let total: u64 = e
             .storage()
             .instance()
@@ -484,10 +504,10 @@ fn submit_reading_impl(
             .set(&DataKey::TotalSubmissions, &(total + 1));
 
         // Prevent duplicate oracle per window
-        if e.storage()
-            .instance()
-            .has(&DataKey::OracleSubmitted(project_id.clone(), oracle.clone()))
-        {
+        if e.storage().instance().has(&DataKey::OracleSubmitted(
+            project_id.clone(),
+            oracle.clone(),
+        )) {
             panic!("oracle already submitted for this window");
         }
 
@@ -526,12 +546,10 @@ fn submit_reading_impl(
             .instance()
             .set(&DataKey::WindowState(project_id.clone()), &window);
 
-        e.storage()
-            .instance()
-            .set(
-                &DataKey::OracleSubmitted(project_id.clone(), oracle.clone()),
-                &true,
-            );
+        e.storage().instance().set(
+            &DataKey::OracleSubmitted(project_id.clone(), oracle.clone()),
+            &true,
+        );
 
         if window.submissions.len() >= config.min_oracles {
             let subs = &window.submissions;
@@ -581,7 +599,8 @@ fn submit_reading_impl(
 
             // Quality penalty (basis points: 0-10000)
             let mut penalty: i64 = 0;
-            if med_ph < config.quality_threshold_ph || med_ph > (config.quality_threshold_ph + 100) {
+            if med_ph < config.quality_threshold_ph || med_ph > (config.quality_threshold_ph + 100)
+            {
                 penalty += 2000;
             }
             if med_turb > config.quality_threshold_turbidity {
@@ -654,26 +673,37 @@ fn submit_reading_impl(
 
     /// Configure the credit token contract and beneficiary for a project.
     /// When enabled, the oracle will auto-mint credits to the beneficiary upon verification finalization.
-    pub fn set_project_config(e: Env, admin: Address, project_id: BytesN<32>, token_contract: Address, beneficiary: Address) {
+    pub fn set_project_config(
+        e: Env,
+        admin: Address,
+        project_id: BytesN<32>,
+        token_contract: Address,
+        beneficiary: Address,
+    ) {
         admin.require_auth();
         let stored: Address = read_admin(&e);
         if admin != stored {
             panic!("unauthorized");
         }
-        let config = ProjectConfig { token_contract, beneficiary };
-        e.storage().instance().set(&DataKey::ProjectConfig(project_id), &config);
+        let config = ProjectConfig {
+            token_contract,
+            beneficiary,
+        };
+        e.storage()
+            .instance()
+            .set(&DataKey::ProjectConfig(project_id), &config);
     }
 
     /// Get the project config (token contract and beneficiary) for a project.
     pub fn get_project_config(e: Env, project_id: BytesN<32>) -> Option<ProjectConfig> {
-        e.storage().instance().get(&DataKey::ProjectConfig(project_id))
+        e.storage()
+            .instance()
+            .get(&DataKey::ProjectConfig(project_id))
     }
 
     /// Get the last verification result for a project. Returns None if no window has been finalized.
     pub fn get_last_result(e: Env, project_id: BytesN<32>) -> Option<VerificationResult> {
-        e.storage()
-            .instance()
-            .get(&DataKey::LastResult(project_id))
+        e.storage().instance().get(&DataKey::LastResult(project_id))
     }
 
     /// Get the full history of verification results for a project.
@@ -806,7 +836,10 @@ fn submit_reading_impl(
             .storage()
             .instance()
             .get(&DataKey::OracleStake(oracle.clone()))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            });
         stake_info.amount += amount;
         stake_info.unstake_request = None;
         e.storage()
@@ -829,7 +862,10 @@ fn submit_reading_impl(
             .storage()
             .instance()
             .get(&DataKey::OracleStake(oracle.clone()))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            });
         if stake_info.amount < amount {
             panic!("insufficient staked balance");
         }
@@ -861,7 +897,10 @@ fn submit_reading_impl(
             .storage()
             .instance()
             .get(&DataKey::OracleStake(oracle.clone()))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            });
         let cooldown_end = stake_info.unstake_request.unwrap_or(0);
         let now = e.ledger().timestamp();
         if cooldown_end == 0 || now < cooldown_end {
@@ -882,12 +921,13 @@ fn submit_reading_impl(
             transfer_args,
         );
 
-        e.storage()
-            .instance()
-            .set(
-                &DataKey::OracleStake(oracle.clone()),
-                &StakeInfo { amount: 0, unstake_request: None },
-            );
+        e.storage().instance().set(
+            &DataKey::OracleStake(oracle.clone()),
+            &StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            },
+        );
     }
 
     /// Slash an oracle's stake. Callable by admin or governance.
@@ -906,7 +946,10 @@ fn submit_reading_impl(
             .storage()
             .instance()
             .get(&DataKey::OracleStake(oracle.clone()))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            });
         if stake_info.amount < amount {
             panic!("slash exceeds staked balance");
         }
@@ -945,14 +988,15 @@ fn submit_reading_impl(
         e.storage()
             .instance()
             .get(&DataKey::OracleStake(oracle))
-            .unwrap_or(StakeInfo { amount: 0, unstake_request: None })
+            .unwrap_or(StakeInfo {
+                amount: 0,
+                unstake_request: None,
+            })
     }
 
     /// Get the slash record for an oracle (most recent slash).
     pub fn get_slash_record(e: Env, oracle: Address) -> Option<SlashReason> {
-        e.storage()
-            .instance()
-            .get(&DataKey::OracleSlashed(oracle))
+        e.storage().instance().get(&DataKey::OracleSlashed(oracle))
     }
 
     /// Get the unstake cooldown period in seconds.
@@ -1003,8 +1047,7 @@ fn submit_reading_impl(
             .instance()
             .set(&DataKey::WindowState(project_id.clone()), &window);
 
-        e.events()
-            .publish((EVENT_WINDOW_OPENED,), (project_id,));
+        e.events().publish((EVENT_WINDOW_OPENED,), (project_id,));
     }
 
     /// Get the current phase of a project's window.
@@ -1042,7 +1085,10 @@ fn submit_reading_impl(
                 .storage()
                 .instance()
                 .get(&DataKey::OracleStake(oracle.clone()))
-                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+                .unwrap_or(StakeInfo {
+                    amount: 0,
+                    unstake_request: None,
+                });
             if stake_info.amount < config.min_stake {
                 panic!("insufficient stake");
             }
@@ -1076,12 +1122,10 @@ fn submit_reading_impl(
             panic!("oracle already committed");
         }
 
-        e.storage()
-            .instance()
-            .set(
-                &DataKey::OracleNonce((project_id.clone(), oracle.clone())),
-                &nonce,
-            );
+        e.storage().instance().set(
+            &DataKey::OracleNonce((project_id.clone(), oracle.clone())),
+            &nonce,
+        );
 
         e.storage().instance().set(
             &key,
@@ -1149,7 +1193,10 @@ fn submit_reading_impl(
                 .storage()
                 .instance()
                 .get(&DataKey::OracleStake(oracle.clone()))
-                .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+                .unwrap_or(StakeInfo {
+                    amount: 0,
+                    unstake_request: None,
+                });
             if stake_info.amount < config.min_stake {
                 panic!("insufficient stake");
             }
@@ -1207,9 +1254,10 @@ fn submit_reading_impl(
             .instance()
             .get(&DataKey::OracleSubmitCount(oracle.clone()))
             .unwrap_or(0);
-        e.storage()
-            .instance()
-            .set(&DataKey::OracleSubmitCount(oracle.clone()), &(oracle_count + 1));
+        e.storage().instance().set(
+            &DataKey::OracleSubmitCount(oracle.clone()),
+            &(oracle_count + 1),
+        );
         let total: u64 = e
             .storage()
             .instance()
@@ -1239,9 +1287,7 @@ fn submit_reading_impl(
             .instance()
             .set(&DataKey::WindowState(project_id.clone()), &window);
 
-        e.storage()
-            .instance()
-            .set(&reveal_key, &true);
+        e.storage().instance().set(&reveal_key, &true);
 
         e.events()
             .publish((EVENT_ORACLE_REVEALED,), (oracle, project_id.clone()));
@@ -1256,10 +1302,7 @@ fn submit_reading_impl(
     /// Finalize a commit-reveal window after the reveal phase ends.
     /// Penalizes oracles that committed but did not reveal.
     /// Can be called by anyone once the reveal phase duration has elapsed.
-    pub fn finalize_window(
-        e: Env,
-        project_id: BytesN<32>,
-    ) -> Option<VerificationResult> {
+    pub fn finalize_window(e: Env, project_id: BytesN<32>) -> Option<VerificationResult> {
         let window: WindowState = e
             .storage()
             .instance()
@@ -1309,26 +1352,27 @@ fn submit_reading_impl(
                     .instance()
                     .get(&DataKey::OracleMissedReveals(oracle.clone()))
                     .unwrap_or(0);
-                e.storage().instance().set(
-                    &DataKey::OracleMissedReveals(oracle.clone()),
-                    &(missed + 1),
-                );
+                e.storage()
+                    .instance()
+                    .set(&DataKey::OracleMissedReveals(oracle.clone()), &(missed + 1));
 
                 // Slash the oracle's stake
                 let mut stake_info: StakeInfo = e
                     .storage()
                     .instance()
                     .get(&DataKey::OracleStake(oracle.clone()))
-                    .unwrap_or(StakeInfo { amount: 0, unstake_request: None });
+                    .unwrap_or(StakeInfo {
+                        amount: 0,
+                        unstake_request: None,
+                    });
 
                 if stake_info.amount > 0 {
                     let slash_amount = stake_info.amount.min(config.min_stake);
                     if slash_amount > 0 {
                         stake_info.amount -= slash_amount;
-                        e.storage().instance().set(
-                            &DataKey::OracleStake(oracle.clone()),
-                            &stake_info,
-                        );
+                        e.storage()
+                            .instance()
+                            .set(&DataKey::OracleStake(oracle.clone()), &stake_info);
 
                         let transfer_args: Vec<Val> = vec![
                             e,
@@ -1346,10 +1390,9 @@ fn submit_reading_impl(
                             reason: 3, // missed_reveal
                             timestamp: e.ledger().timestamp(),
                         };
-                        e.storage().instance().set(
-                            &DataKey::OracleSlashed(oracle.clone()),
-                            &slash_record,
-                        );
+                        e.storage()
+                            .instance()
+                            .set(&DataKey::OracleSlashed(oracle.clone()), &slash_record);
 
                         e.events().publish(
                             (EVENT_ORACLE_MISSED_REVEAL,),
@@ -1359,19 +1402,14 @@ fn submit_reading_impl(
                 }
 
                 // Clean up commitment
-                e.storage()
-                    .instance()
-                    .remove(&commit_key);
+                e.storage().instance().remove(&commit_key);
             }
         }
     }
 
     /// Internal: finalize a window with current submissions (used by both
     /// auto-finalization in reveal_reading and explicit finalize_window).
-    fn finalize_reveals(
-        e: Env,
-        project_id: BytesN<32>,
-    ) -> Option<VerificationResult> {
+    fn finalize_reveals(e: Env, project_id: BytesN<32>) -> Option<VerificationResult> {
         let mut window: WindowState = e
             .storage()
             .instance()
@@ -1497,12 +1535,14 @@ fn submit_reading_impl(
             .unwrap_or_else(|| Vec::new(&e));
         for i in 0..oracles.len() {
             let oracle = oracles.get(i).unwrap();
-            e.storage().instance().remove(
-                &DataKey::OracleCommitted((project_id.clone(), oracle.clone())),
-            );
-            e.storage().instance().remove(
-                &DataKey::OracleRevealed((project_id.clone(), oracle.clone())),
-            );
+            e.storage().instance().remove(&DataKey::OracleCommitted((
+                project_id.clone(),
+                oracle.clone(),
+            )));
+            e.storage().instance().remove(&DataKey::OracleRevealed((
+                project_id.clone(),
+                oracle.clone(),
+            )));
         }
 
         e.events()
@@ -1664,7 +1704,8 @@ mod tests {
 
         client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
         client.submit_reading(&o2, &project_id, &1, &710, &12, &75, &480, &260, &9, &1);
-        let result = client.submit_reading(&o3, &project_id, &1, &690, &11, &78, &510, &245, &7, &1);
+        let result =
+            client.submit_reading(&o3, &project_id, &1, &690, &11, &78, &510, &245, &7, &1);
 
         assert!(result.is_some());
         let res = result.unwrap();
@@ -1803,7 +1844,8 @@ mod tests {
         let project_id = BytesN::from_array(&e, &[6u8; 32]);
         client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &500, &250, &15, &5);
         client.submit_reading(&o2, &project_id, &1, &700, &10, &80, &500, &250, &15, &5);
-        let result = client.submit_reading(&o3, &project_id, &1, &700, &10, &80, &500, &250, &15, &5);
+        let result =
+            client.submit_reading(&o3, &project_id, &1, &700, &10, &80, &500, &250, &15, &5);
 
         assert!(result.is_some());
         let res = result.unwrap();
@@ -1826,7 +1868,8 @@ mod tests {
         let project_id = BytesN::from_array(&e, &[7u8; 32]);
         client.submit_reading(&o1, &project_id, &1, &300, &200, &10, &500, &350, &8, &1);
         client.submit_reading(&o2, &project_id, &1, &300, &200, &10, &500, &350, &8, &1);
-        let result = client.submit_reading(&o3, &project_id, &1, &300, &200, &10, &500, &350, &8, &1);
+        let result =
+            client.submit_reading(&o3, &project_id, &1, &300, &200, &10, &500, &350, &8, &1);
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().quality_penalty, 7000);
@@ -1971,7 +2014,8 @@ mod tests {
 
         client.submit_reading(&o1, &project_id, &2, &700, &10, &80, &500, &250, &8, &1);
         client.submit_reading(&o2, &project_id, &2, &700, &10, &80, &500, &250, &8, &1);
-        let result = client.submit_reading(&o3, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
+        let result =
+            client.submit_reading(&o3, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().oracle_count, 3);
@@ -2015,7 +2059,8 @@ mod tests {
         client.add_oracle(&admin, &o3);
 
         let project_id = BytesN::from_array(&e, &[41u8; 32]);
-        let result = client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
+        let result =
+            client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
 
         assert!(result.is_none());
         assert!(client.get_last_result(&project_id).is_none());
@@ -2035,7 +2080,8 @@ mod tests {
 
         let project_id = BytesN::from_array(&e, &[42u8; 32]);
         client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
-        let result = client.submit_reading(&o2, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
+        let result =
+            client.submit_reading(&o2, &project_id, &1, &700, &10, &80, &500, &250, &8, &1);
 
         assert!(result.is_none());
         assert!(client.get_last_result(&project_id).is_none());
@@ -2056,7 +2102,8 @@ mod tests {
         let project_id = BytesN::from_array(&e, &[43u8; 32]);
         client.submit_reading(&o1, &project_id, &1, &300, &200, &10, &0, &350, &20, &5);
         client.submit_reading(&o2, &project_id, &1, &300, &200, &10, &0, &350, &20, &5);
-        let result = client.submit_reading(&o3, &project_id, &1, &300, &200, &10, &0, &350, &20, &5);
+        let result =
+            client.submit_reading(&o3, &project_id, &1, &300, &200, &10, &0, &350, &20, &5);
 
         assert!(result.is_some());
         let res = result.unwrap();
@@ -2082,7 +2129,8 @@ mod tests {
 
         let project_id = BytesN::from_array(&e, &[44u8; 32]);
         client.submit_reading(&o1, &project_id, &1, &700, &10, &80, &400, &250, &8, &1);
-        let result = client.submit_reading(&o2, &project_id, &1, &700, &10, &80, &600, &250, &8, &1);
+        let result =
+            client.submit_reading(&o2, &project_id, &1, &700, &10, &80, &600, &250, &8, &1);
 
         assert!(result.is_some());
         let res = result.unwrap();
@@ -2553,18 +2601,7 @@ mod tests {
         // Compute expected hash off-chain and commit
         for i in 0..3u32 {
             let o = oracles.get(i).unwrap();
-            let commitment = sha256_commitment(
-                &e,
-                nonce,
-                700,
-                10,
-                80,
-                500,
-                250,
-                8,
-                1,
-                &salt,
-            );
+            let commitment = sha256_commitment(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
             client.commit_reading(&o, &project_id, &nonce, &commitment);
         }
 
@@ -2577,24 +2614,12 @@ mod tests {
 
         // All oracles reveal
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
-        let result = client.reveal_reading(
-            &oracles.get(0).unwrap(),
-            &project_id,
-            &params,
-        );
+        let result = client.reveal_reading(&oracles.get(0).unwrap(), &project_id, &params);
         assert!(result.is_none()); // not finalized yet
 
-        client.reveal_reading(
-            &oracles.get(1).unwrap(),
-            &project_id,
-            &params,
-        );
+        client.reveal_reading(&oracles.get(1).unwrap(), &project_id, &params);
 
-        let result = client.reveal_reading(
-            &oracles.get(2).unwrap(),
-            &project_id,
-            &params,
-        );
+        let result = client.reveal_reading(&oracles.get(2).unwrap(), &project_id, &params);
 
         assert!(result.is_some());
         let res = result.unwrap();
@@ -2701,11 +2726,7 @@ mod tests {
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
         for i in 0..3u32 {
             let o = oracles.get(i).unwrap();
-            client.reveal_reading(
-                &o,
-                &project_id,
-                &params,
-            );
+            client.reveal_reading(&o, &project_id, &params);
         }
 
         // Advance past reveal phase
@@ -2884,11 +2905,7 @@ mod tests {
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
         for i in 0..3u32 {
             let o = oracles.get(i).unwrap();
-            client.reveal_reading(
-                &o,
-                &project_id,
-                &params,
-            );
+            client.reveal_reading(&o, &project_id, &params);
         }
 
         // Try to finalize_window before reveal phase ends should fail (already auto-finalized)
@@ -2919,11 +2936,7 @@ mod tests {
         client.begin_reveal_phase(&project_id);
 
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
-        client.reveal_reading(
-            &oracles.get(0).unwrap(),
-            &project_id,
-            &params,
-        );
+        client.reveal_reading(&oracles.get(0).unwrap(), &project_id, &params);
 
         // Second reveal should fail
         let result = e.try_invoke_contract::<_, Option<VerificationResult>>(
@@ -3011,16 +3024,8 @@ mod tests {
 
         // Only 2 reveal (below min_oracles=3)
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
-        client.reveal_reading(
-            &oracles.get(0).unwrap(),
-            &project_id,
-            &params,
-        );
-        client.reveal_reading(
-            &oracles.get(1).unwrap(),
-            &project_id,
-            &params,
-        );
+        client.reveal_reading(&oracles.get(0).unwrap(), &project_id, &params);
+        client.reveal_reading(&oracles.get(1).unwrap(), &project_id, &params);
 
         // Advance past reveal phase
         e.ledger().set_timestamp(e.ledger().timestamp() + 301);
@@ -3121,11 +3126,7 @@ mod tests {
 
         // Only oracle 0 reveals
         let params = make_reveal_params(&e, nonce, 700, 10, 80, 500, 250, 8, 1, &salt);
-        client.reveal_reading(
-            &oracles.get(0).unwrap(),
-            &project_id,
-            &params,
-        );
+        client.reveal_reading(&oracles.get(0).unwrap(), &project_id, &params);
 
         // Advance past reveal phase
         e.ledger().set_timestamp(e.ledger().timestamp() + 301);

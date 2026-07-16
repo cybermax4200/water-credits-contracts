@@ -113,29 +113,19 @@ fn save_balance(e: &Env, addr: &Address, amount: i128) {
 }
 
 fn read_total_supply(e: &Env) -> i128 {
-    e.storage()
-        .instance()
-        .get(&DataKey::TotalSupply)
-        .unwrap()
+    e.storage().instance().get(&DataKey::TotalSupply).unwrap()
 }
 
 fn save_total_supply(e: &Env, amount: i128) {
-    e.storage()
-        .instance()
-        .set(&DataKey::TotalSupply, &amount);
+    e.storage().instance().set(&DataKey::TotalSupply, &amount);
 }
 
 fn read_total_retired(e: &Env) -> i128 {
-    e.storage()
-        .instance()
-        .get(&DataKey::TotalRetired)
-        .unwrap()
+    e.storage().instance().get(&DataKey::TotalRetired).unwrap()
 }
 
 fn save_total_retired(e: &Env, amount: i128) {
-    e.storage()
-        .instance()
-        .set(&DataKey::TotalRetired, &amount);
+    e.storage().instance().set(&DataKey::TotalRetired, &amount);
 }
 
 fn read_allowance(e: &Env, from: &Address, spender: &Address) -> i128 {
@@ -261,10 +251,7 @@ impl CreditToken {
 
     /// Get the configured maximum supply (0 = uncapped).
     pub fn max_supply(e: Env) -> i128 {
-        e.storage()
-            .instance()
-            .get(&DataKey::MaxSupply)
-            .unwrap_or(0)
+        e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0)
     }
 
     /// Set the pause guardian: a secondary address that may call `pause` and `unpause`
@@ -315,7 +302,7 @@ impl CreditToken {
         if recipients.len() != amounts.len() {
             panic!("recipients and amounts length mismatch");
         }
-        if recipients.len() == 0 {
+        if recipients.is_empty() {
             panic!("empty batch");
         }
         require_not_paused(&e);
@@ -390,7 +377,7 @@ impl CreditToken {
         if recipients.len() != amounts.len() {
             panic!("recipients and amounts length mismatch");
         }
-        if recipients.len() == 0 {
+        if recipients.is_empty() {
             panic!("empty batch");
         }
         require_not_paused(&e);
@@ -417,7 +404,8 @@ impl CreditToken {
             let amount = amounts.get(i).unwrap();
             let to_balance = read_balance(&e, &to);
             save_balance(&e, &to, to_balance.checked_add(amount).expect("overflow"));
-            e.events().publish((EVENT_XFER,), (from.clone(), to, amount));
+            e.events()
+                .publish((EVENT_XFER,), (from.clone(), to, amount));
         }
     }
 
@@ -500,11 +488,7 @@ impl CreditToken {
 
         let metadata: CreditMetadata = e.storage().instance().get(&DataKey::Metadata).unwrap();
         let project_id = metadata.project_id.clone();
-        let cert_count: u64 = e
-            .storage()
-            .instance()
-            .get(&DataKey::CertCount)
-            .unwrap();
+        let cert_count: u64 = e.storage().instance().get(&DataKey::CertCount).unwrap();
         let timestamp = e.ledger().timestamp();
 
         let cert = RetirementCertificate {
@@ -525,7 +509,11 @@ impl CreditToken {
         e.events()
             .publish((EVENT_RETIRED,), (holder.clone(), amount, cert.clone()));
 
-        if let Some(registry) = e.storage().instance().get::<_, Address>(&DataKey::RetirementRegistry) {
+        if let Some(registry) = e
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::RetirementRegistry)
+        {
             let record_args: Vec<Val> = vec![
                 &e,
                 e.current_contract_address().to_val(),
@@ -591,7 +579,14 @@ mod tests {
     use soroban_sdk::testutils::Events;
     use soroban_sdk::{Address, Env, String, TryFromVal};
 
-    fn setup() -> (Env, Address, Address, Address, BytesN<32>, CreditTokenClient<'static>) {
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        BytesN<32>,
+        CreditTokenClient<'static>,
+    ) {
         let e = Env::default();
         let admin = Address::generate(&e);
         let user1 = Address::generate(&e);

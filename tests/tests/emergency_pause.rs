@@ -65,11 +65,7 @@ fn test_admin_direct_emergency_pause_and_unpause() {
     let project_id = BytesN::from_array(&e, &[10u8; 32]);
 
     let (token_id, token_client) = deploy_token(&e, &admin, &project_id);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     // Set governance as the token's pause guardian.
     wire_pause_guardian(&token_client, &admin, &gov_id);
@@ -134,7 +130,10 @@ fn test_supermajority_proposal_emergency_pause() {
     let proposal_id = gov_client.propose(
         &member1,
         &String::from_str(&e, "Emergency pause: oracle compromised"),
-        &String::from_str(&e, "Oracle 0xABCD has been flagged as compromised. Pause all tokens while we investigate."),
+        &String::from_str(
+            &e,
+            "Oracle 0xABCD has been flagged as compromised. Pause all tokens while we investigate.",
+        ),
         &actions,
     );
 
@@ -194,7 +193,10 @@ fn test_supermajority_proposal_emergency_unpause() {
     let proposal_id = gov_client.propose(
         &member1,
         &String::from_str(&e, "Emergency unpause: incident resolved"),
-        &String::from_str(&e, "The oracle compromise was a false positive. Resume operations."),
+        &String::from_str(
+            &e,
+            "The oracle compromise was a false positive. Resume operations.",
+        ),
         &actions,
     );
 
@@ -225,11 +227,7 @@ fn test_paused_token_blocks_mint() {
     let project_id = BytesN::from_array(&e, &[40u8; 32]);
 
     let (token_id, token_client) = deploy_token(&e, &admin, &project_id);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     wire_pause_guardian(&token_client, &admin, &gov_id);
     gov_client.register_token(&admin, &token_id);
@@ -238,11 +236,12 @@ fn test_paused_token_blocks_mint() {
     gov_client.emergency_pause(&admin);
     assert!(token_client.paused());
 
-    // mint_to should panic.
-    let result = std::panic::catch_unwind(|| {
-        token_client.mint_to(&admin, &user, &500);
-    });
-    assert!(result.is_err(), "mint_to must fail when the token is paused");
+    // mint_to should fail (try_* returns Err on contract panic).
+    let result = token_client.try_mint_to(&admin, &user, &500);
+    assert!(
+        result.is_err(),
+        "mint_to must fail when the token is paused"
+    );
 
     // Balance must remain 0.
     assert_eq!(token_client.balance(&user), 0);
@@ -262,11 +261,7 @@ fn test_paused_token_blocks_transfer() {
     let project_id = BytesN::from_array(&e, &[50u8; 32]);
 
     let (token_id, token_client) = deploy_token(&e, &admin, &project_id);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     wire_pause_guardian(&token_client, &admin, &gov_id);
     gov_client.register_token(&admin, &token_id);
@@ -279,11 +274,12 @@ fn test_paused_token_blocks_transfer() {
     gov_client.emergency_pause(&admin);
     assert!(token_client.paused());
 
-    // transfer should panic.
-    let result = std::panic::catch_unwind(|| {
-        token_client.transfer(&sender, &receiver, &100);
-    });
-    assert!(result.is_err(), "transfer must fail when the token is paused");
+    // transfer should fail (try_* returns Err on contract panic).
+    let result = token_client.try_transfer(&sender, &receiver, &100);
+    assert!(
+        result.is_err(),
+        "transfer must fail when the token is paused"
+    );
 
     // Balances should be unchanged.
     assert_eq!(token_client.balance(&sender), 1000);
@@ -303,11 +299,7 @@ fn test_paused_token_blocks_retire() {
     let project_id = BytesN::from_array(&e, &[60u8; 32]);
 
     let (token_id, token_client) = deploy_token(&e, &admin, &project_id);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     wire_pause_guardian(&token_client, &admin, &gov_id);
     gov_client.register_token(&admin, &token_id);
@@ -319,12 +311,10 @@ fn test_paused_token_blocks_retire() {
     gov_client.emergency_pause(&admin);
     assert!(token_client.paused());
 
-    // retire should panic.
+    // retire should fail (try_* returns Err on contract panic).
     let purpose = String::from_str(&e, "voluntary");
     let uri = String::from_str(&e, "ipfs://QmTest");
-    let result = std::panic::catch_unwind(|| {
-        token_client.retire(&holder, &200, &purpose, &uri);
-    });
+    let result = token_client.try_retire(&holder, &200, &purpose, &uri);
     assert!(result.is_err(), "retire must fail when the token is paused");
 
     // Supply and balances should be unchanged.
@@ -345,11 +335,7 @@ fn test_operations_resume_after_emergency_unpause() {
     let project_id = BytesN::from_array(&e, &[70u8; 32]);
 
     let (token_id, token_client) = deploy_token(&e, &admin, &project_id);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     wire_pause_guardian(&token_client, &admin, &gov_id);
     gov_client.register_token(&admin, &token_id);
@@ -384,11 +370,7 @@ fn test_emergency_pause_affects_all_registered_tokens() {
 
     let (token_id_a, token_client_a) = deploy_token(&e, &admin, &project_id_a);
     let (token_id_b, token_client_b) = deploy_token(&e, &admin, &project_id_b);
-    let (gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (gov_id, gov_client) = deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     // Register both tokens.
     wire_pause_guardian(&token_client_a, &admin, &gov_id);
@@ -425,11 +407,8 @@ fn test_register_token_is_idempotent() {
     let project_id = BytesN::from_array(&e, &[90u8; 32]);
 
     let (token_id, _token_client) = deploy_token(&e, &admin, &project_id);
-    let (_gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (_gov_id, gov_client) =
+        deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     gov_client.register_token(&admin, &token_id);
     gov_client.register_token(&admin, &token_id); // duplicate – should be ignored
@@ -452,11 +431,8 @@ fn test_deregister_token_removes_from_list() {
 
     let (token_id_a, _) = deploy_token(&e, &admin, &project_id_a);
     let (token_id_b, _) = deploy_token(&e, &admin, &project_id_b);
-    let (_gov_id, gov_client) = deploy_governance(
-        &e,
-        &admin,
-        Vec::from_array(&e, [member.clone()]),
-    );
+    let (_gov_id, gov_client) =
+        deploy_governance(&e, &admin, Vec::from_array(&e, [member.clone()]));
 
     gov_client.register_token(&admin, &token_id_a);
     gov_client.register_token(&admin, &token_id_b);

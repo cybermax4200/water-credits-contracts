@@ -1,14 +1,35 @@
 use credit_token::{CreditToken, CreditTokenClient};
-use verification_oracle::{VerificationOracle, VerificationOracleClient};
 use retirement_registry::{RetirementRegistry, RetirementRegistryClient};
-use soroban_sdk::{
-    testutils::Address as _, Address, BytesN, Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
+use verification_oracle::{OracleConfig, VerificationOracle, VerificationOracleClient};
 
 fn deploy_oracle(e: &Env, admin: &Address) -> (Address, VerificationOracleClient<'static>) {
     let contract_id = e.register_contract(None, VerificationOracle);
     let client = VerificationOracleClient::new(e, &contract_id);
-    client.initialize(admin);
+    let staking_token = Address::generate(e);
+    let treasury = Address::generate(e);
+    client.initialize(admin, &staking_token, &treasury);
+    // Disable staking for integration tests — staking requires a live token contract.
+    // Keep min_oracles at 3 to match the test's 3-oracle submission flow.
+    client.update_config(
+        admin,
+        &OracleConfig {
+            min_oracles: 3,
+            max_oracles: 10,
+            quality_threshold_ph: 600,
+            quality_threshold_turbidity: 50,
+            quality_threshold_do: 50,
+            quality_threshold_temp: 300,
+            credit_per_kg_n: 10,
+            credit_per_kg_p: 20,
+            staking_token,
+            treasury,
+            min_stake: 0,
+            unstake_cooldown_secs: 86400,
+            commit_phase_secs: 300,
+            reveal_phase_secs: 300,
+        },
+    );
     (contract_id, client)
 }
 
@@ -63,9 +84,42 @@ fn test_oracle_mints_credits_to_beneficiary() {
     oracle_client.add_oracle(&admin, &o3);
 
     // Submit readings (one from each oracle)
-    oracle_client.submit_reading(&o1, &project_id, &1, &700i64, &10i64, &80i64, &500i64, &250i64, &8i64, &1i64);
-    oracle_client.submit_reading(&o2, &project_id, &1, &700i64, &10i64, &80i64, &500i64, &250i64, &8i64, &1i64);
-    oracle_client.submit_reading(&o3, &project_id, &1, &700i64, &10i64, &80i64, &500i64, &250i64, &8i64, &1i64);
+    oracle_client.submit_reading(
+        &o1,
+        &project_id,
+        &1,
+        &700i64,
+        &10i64,
+        &80i64,
+        &500i64,
+        &250i64,
+        &8i64,
+        &1i64,
+    );
+    oracle_client.submit_reading(
+        &o2,
+        &project_id,
+        &1,
+        &700i64,
+        &10i64,
+        &80i64,
+        &500i64,
+        &250i64,
+        &8i64,
+        &1i64,
+    );
+    oracle_client.submit_reading(
+        &o3,
+        &project_id,
+        &1,
+        &700i64,
+        &10i64,
+        &80i64,
+        &500i64,
+        &250i64,
+        &8i64,
+        &1i64,
+    );
 
     // Beneficiary should have received credits
     let balance = token_client.balance(&beneficiary);

@@ -1,7 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, String, Symbol, Val,
-    Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, String, Symbol, Val, Vec,
 };
 
 #[cfg(test)]
@@ -156,9 +155,7 @@ impl Governance {
             }
         }
         e.storage().instance().set(&DataKey::MemberCount, &count);
-        e.storage()
-            .instance()
-            .set(&DataKey::ProtocolPaused, &false);
+        e.storage().instance().set(&DataKey::ProtocolPaused, &false);
         e.storage()
             .instance()
             .set(&DataKey::RegisteredTokens, &Vec::<Address>::new(&e));
@@ -195,7 +192,11 @@ impl Governance {
         let config: GovernanceConfig = read_config(&e);
 
         // Check active proposal limit
-        let active: Vec<u64> = e.storage().instance().get(&DataKey::ActiveProposals).unwrap();
+        let active: Vec<u64> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap();
         if active.len() >= config.max_active_proposals {
             panic!("too many active proposals");
         }
@@ -346,7 +347,11 @@ impl Governance {
         }
 
         // Remove from active list
-        let active: Vec<u64> = e.storage().instance().get(&DataKey::ActiveProposals).unwrap();
+        let active: Vec<u64> = e
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveProposals)
+            .unwrap();
         let mut new_active: Vec<u64> = Vec::new(&e);
         for i in 0..active.len() {
             let id = active.get(i).unwrap();
@@ -378,11 +383,7 @@ impl Governance {
             } else if action.function == Symbol::new(&e, "emergency_unpause") {
                 Self::do_unpause(&e);
             } else {
-                e.invoke_contract::<()>(
-                    &action.target,
-                    &action.function,
-                    action.args.clone(),
-                );
+                e.invoke_contract::<()>(&action.target, &action.function, action.args.clone());
             }
         }
 
@@ -437,8 +438,7 @@ impl Governance {
             .instance()
             .set(&DataKey::MemberCount, &(count + 1));
 
-        e.events()
-            .publish((EVENT_MEMBER_ADDED,), (new_member,));
+        e.events().publish((EVENT_MEMBER_ADDED,), (new_member,));
     }
 
     /// Remove a governance member. Cannot remove the last member. Admin only.
@@ -448,23 +448,21 @@ impl Governance {
         if admin != stored {
             panic!("unauthorized");
         }
-        if !e.storage()
-            .instance()
-            .has(&DataKey::Member(member.clone()))
-        {
+        if !e.storage().instance().has(&DataKey::Member(member.clone())) {
             panic!("not a member");
         }
         let count: u32 = e.storage().instance().get(&DataKey::MemberCount).unwrap();
         if count <= 1 {
             panic!("cannot remove last member");
         }
-        e.storage().instance().remove(&DataKey::Member(member.clone()));
+        e.storage()
+            .instance()
+            .remove(&DataKey::Member(member.clone()));
         e.storage()
             .instance()
             .set(&DataKey::MemberCount, &(count - 1));
 
-        e.events()
-            .publish((EVENT_MEMBER_REMOVED,), (member,));
+        e.events().publish((EVENT_MEMBER_REMOVED,), (member,));
     }
 
     /// Check if an address is a governance member.
@@ -589,9 +587,7 @@ impl Governance {
             e.invoke_contract::<()>(&token, &Symbol::new(e, "pause"), args);
         }
 
-        e.storage()
-            .instance()
-            .set(&DataKey::ProtocolPaused, &true);
+        e.storage().instance().set(&DataKey::ProtocolPaused, &true);
         e.events().publish((EVENT_EMERGENCY_PAUSE,), ());
     }
 
@@ -609,9 +605,7 @@ impl Governance {
             e.invoke_contract::<()>(&token, &Symbol::new(e, "unpause"), args);
         }
 
-        e.storage()
-            .instance()
-            .set(&DataKey::ProtocolPaused, &false);
+        e.storage().instance().set(&DataKey::ProtocolPaused, &false);
         e.events().publish((EVENT_EMERGENCY_UNPAUSE,), ());
     }
 }
@@ -1095,7 +1089,7 @@ mod tests {
 
         // Last call wins — the mock stores the most recent value.
         assert_eq!(mock_client.get_value(), 0); // i128 default
-        // But the echo_arg returns the symbol; verify via the stored key.
+                                                // But the echo_arg returns the symbol; verify via the stored key.
         let stored: Symbol = e
             .storage()
             .instance()

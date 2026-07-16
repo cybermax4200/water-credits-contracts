@@ -99,15 +99,9 @@ impl ProjectRegistry {
             .instance()
             .set(&DataKey::Project(project_id.clone()), &project);
 
-        let mut ids: Vec<BytesN<32>> = e
-            .storage()
-            .instance()
-            .get(&DataKey::ProjectIds)
-            .unwrap();
+        let mut ids: Vec<BytesN<32>> = e.storage().instance().get(&DataKey::ProjectIds).unwrap();
         ids.push_back(project_id.clone());
-        e.storage()
-            .instance()
-            .set(&DataKey::ProjectIds, &ids);
+        e.storage().instance().set(&DataKey::ProjectIds, &ids);
         e.storage()
             .instance()
             .set(&DataKey::ProjectCount, &(count + 1));
@@ -155,11 +149,7 @@ impl ProjectRegistry {
 
     /// List all registered projects. Returns an empty vec if none exist.
     pub fn list_all(e: Env) -> Vec<ProjectEntry> {
-        let ids: Vec<BytesN<32>> = e
-            .storage()
-            .instance()
-            .get(&DataKey::ProjectIds)
-            .unwrap();
+        let ids: Vec<BytesN<32>> = e.storage().instance().get(&DataKey::ProjectIds).unwrap();
         let mut projects: Vec<ProjectEntry> = Vec::new(&e);
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();

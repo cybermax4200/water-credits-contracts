@@ -63,7 +63,11 @@ impl RetirementRegistry {
     ) -> u64 {
         caller.require_auth();
         let stored: Address = read_admin(&e);
-        let authorized = e.storage().instance().get(&DataKey::AuthorizedCaller(caller.clone())).unwrap_or(false);
+        let authorized = e
+            .storage()
+            .instance()
+            .get(&DataKey::AuthorizedCaller(caller.clone()))
+            .unwrap_or(false);
         if caller != stored && !authorized {
             panic!("unauthorized");
         }
@@ -143,7 +147,9 @@ impl RetirementRegistry {
         if admin != stored {
             panic!("unauthorized");
         }
-        e.storage().instance().set(&DataKey::AuthorizedCaller(caller), &authorized);
+        e.storage()
+            .instance()
+            .set(&DataKey::AuthorizedCaller(caller), &authorized);
     }
 
     /// Get all retirement records for a given retiree address.

@@ -2,8 +2,8 @@
 #![allow(clippy::too_many_arguments)]
 use shared::generate_project_id;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, Bytes, BytesN, Env, String,
-    Symbol, Val, Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, BytesN, Env, String, Symbol,
+    Val, Vec,
 };
 
 #[cfg(test)]
@@ -95,11 +95,7 @@ impl CreditFactory {
             panic!("area must be positive");
         }
 
-        let count: u64 = e
-            .storage()
-            .instance()
-            .get(&DataKey::ProjectCount)
-            .unwrap();
+        let count: u64 = e.storage().instance().get(&DataKey::ProjectCount).unwrap();
         let timestamp = e.ledger().timestamp();
 
         let project_id: BytesN<32> = generate_project_id(&e, count, timestamp);
@@ -121,11 +117,7 @@ impl CreditFactory {
             project_id.clone().to_val(),
             methodology.clone().to_val(),
         ];
-        e.invoke_contract::<()>(
-            &token_address,
-            &Symbol::new(&e, "initialize"),
-            init_args,
-        );
+        e.invoke_contract::<()>(&token_address, &Symbol::new(&e, "initialize"), init_args);
 
         let project = ProjectInfo {
             id: project_id.clone(),
@@ -187,15 +179,17 @@ impl CreditFactory {
 
     /// Return the total number of registered projects.
     pub fn project_count(e: Env) -> u64 {
-        e.storage()
-            .instance()
-            .get(&DataKey::ProjectCount)
-            .unwrap()
+        e.storage().instance().get(&DataKey::ProjectCount).unwrap()
     }
 
     /// Transfer project ownership to a new wallet address.
     /// Can be called by admin or the current project owner.
-    pub fn update_project_owner(e: Env, caller: Address, project_id: BytesN<32>, new_owner: Address) {
+    pub fn update_project_owner(
+        e: Env,
+        caller: Address,
+        project_id: BytesN<32>,
+        new_owner: Address,
+    ) {
         caller.require_auth();
         let admin = read_admin(&e);
         let mut project: ProjectInfo = e
@@ -222,12 +216,21 @@ mod tests {
     use soroban_sdk::testutils::Events;
     use soroban_sdk::{Address, Env, TryFromVal};
 
-    fn setup_with_client() -> (Env, Address, Address, BytesN<32>, CreditFactoryClient<'static>) {
+    fn setup_with_client() -> (
+        Env,
+        Address,
+        Address,
+        BytesN<32>,
+        CreditFactoryClient<'static>,
+    ) {
         let e = Env::default();
         let admin = Address::generate(&e);
         let owner = Address::generate(&e);
-        let wasm = include_bytes!("../../../target/wasm32-unknown-unknown/release/credit_token.wasm");
-        let wasm_hash = e.deployer().upload_contract_wasm(Bytes::from_slice(&e, wasm));
+        let wasm =
+            include_bytes!("../../../target/wasm32-unknown-unknown/release/credit_token.wasm");
+        let wasm_hash = e
+            .deployer()
+            .upload_contract_wasm(Bytes::from_slice(&e, wasm));
         let contract_id = e.register_contract(None, CreditFactory);
         let client = CreditFactoryClient::new(&e, &contract_id);
 
