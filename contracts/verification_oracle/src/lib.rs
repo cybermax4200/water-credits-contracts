@@ -202,7 +202,7 @@ fn median_i64(e: &Env, values: &Vec<i64>) -> i64 {
         }
     }
     let len = sorted.len();
-    if len.is_multiple_of(2) {
+    if len % 2 == 0 {
         (sorted.get(len / 2 - 1).unwrap() + sorted.get(len / 2).unwrap()) / 2
     } else {
         sorted.get(len / 2).unwrap()
@@ -227,7 +227,7 @@ fn median_i128(e: &Env, values: &Vec<i128>) -> i128 {
         }
     }
     let len = sorted.len();
-    if len.is_multiple_of(2) {
+    if len % 2 == 0 {
         (sorted.get(len / 2 - 1).unwrap() + sorted.get(len / 2).unwrap()) / 2
     } else {
         sorted.get(len / 2).unwrap()
